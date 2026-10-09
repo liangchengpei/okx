@@ -24,6 +24,7 @@ QPushButton:hover { background: #e0e2e5; }
 QPushButton:disabled { color: #999; background: #f0f0f0; }
 QPushButton#start { background: #111; color: white; }
 QPushButton#start:hover { background: #333; }
+QPushButton#emergency:checked { background: #c83838; color: white; }
 QPushButton#remove { background: transparent; color: #777; font-size: 20px; padding: 4px; }
 QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
@@ -183,6 +184,12 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         controls.addWidget(self.status_label, 1)
+        self.emergency_button = QPushButton("情况紧急：关")
+        self.emergency_button.setObjectName("emergency")
+        self.emergency_button.setCheckable(True)
+        self.emergency_button.setToolTip("打开后，首次价格报警启动循环；价格播报优先，关闭此按钮停止紧急循环")
+        self.emergency_button.toggled.connect(self.toggle_emergency)
+        controls.addWidget(self.emergency_button)
         self.volume_label = QLabel("音量 100%")
         controls.addWidget(self.volume_label)
         self.volume_slider = QSlider(Qt.Horizontal)
@@ -240,6 +247,10 @@ class MainWindow(QMainWindow):
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
 
+    def toggle_emergency(self, enabled):
+        self.emergency_button.setText("情况紧急：开" if enabled else "情况紧急：关")
+        self.speech.set_emergency(enabled)
+
     def change_volume(self, value):
         self.volume_label.setText(f"音量 {value}%" if value else "音量 0%（静音）")
         self.speech.set_volume(value)
@@ -250,7 +261,7 @@ class MainWindow(QMainWindow):
             self.show_error(error)
             return
         self.show_error("")
-        self.speech.announce("BTC-USDT-SWAP", "82600.05")
+        self.speech.announce("BTC-USDT-SWAP", "82600.05", alarm=False)
 
     def toggle_voice(self, inst):
         row = self.rows[inst]
@@ -306,6 +317,7 @@ class MainWindow(QMainWindow):
             row.voice_state.setText(f"范围内静音 [{row.ladder.lower}, {row.ladder.upper}]")
 
     def speech_failed(self, message):
+        self.emergency_button.setChecked(False)
         for inst in self.rows:
             self.stop_voice(inst)
         self.show_error(message)
@@ -381,6 +393,7 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        self.emergency_button.setChecked(False)
         self.speech.cancel()
         if self.worker and self.worker.isRunning():
             worker = self.worker

@@ -69,6 +69,7 @@ class PriceLadder:
 
 class SpeechService(QObject):
     error = Signal(str)
+    EMERGENCY = "__emergency__"
 
     def __init__(self, parent=None, *, prefer_native=True, max_pending=5):
         super().__init__(parent)
@@ -77,6 +78,8 @@ class SpeechService(QObject):
         self.pending = deque(maxlen=max_pending)
         self.current = None
         self._speaking = False
+        self.emergency_enabled = False
+        self.emergency_active = False
         commands = local_speech_commands() if prefer_native else None
         if commands:
             self.tts = WaveSpeechEngine(commands, self)
@@ -123,15 +126,30 @@ class SpeechService(QObject):
         if self.tts:
             self.tts.setVolume(max(0, min(100, percent)) / 100)
 
-    def announce(self, instrument, price):
+    def set_emergency(self, enabled):
+        self.emergency_enabled = enabled
+        if not enabled:
+            self.emergency_active = False
+            if self.current == self.EMERGENCY:
+                self.cancel(self.EMERGENCY)
+
+    def announce(self, instrument, price, *, alarm=True):
+        if alarm and self.emergency_enabled:
+            self.emergency_active = True
         # A full deque evicts only the oldest waiting utterance, never the active one.
         self.pending.append((instrument, price))
         self._next()
 
     def _next(self):
-        if self.availability_error() or not self.pending or self.current is not None:
+        if self.availability_error() or self.current is not None:
             return
         if self.tts.state() != QTextToSpeech.State.Ready:
+            return
+        if not self.pending:
+            if self.emergency_active:
+                self.current = self.EMERGENCY
+                self._speaking = False
+                self.tts.say("情况紧急" if self.chinese else "Emergency")
             return
         instrument, price = self.pending.popleft()
         self.current = instrument
@@ -151,6 +169,8 @@ class SpeechService(QObject):
             QTimer.singleShot(0, self._next)
 
     def _failed(self):
+        self.emergency_active = False
+        self.emergency_enabled = False
         self.pending.clear()
         self.current = None
         self._speaking = False

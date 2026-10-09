@@ -50,10 +50,13 @@ class FakeSpeech(QObject):
     def set_volume(self, percent):
         self.volume = percent
 
+    def set_emergency(self, enabled):
+        self.emergency = enabled
+
     def availability_error(self):
         return ""
 
-    def announce(self, inst, price):
+    def announce(self, inst, price, *, alarm=True):
         self.calls.append((inst, price))
 
     def cancel(self, inst=None, *, interrupt=True):
@@ -198,3 +201,16 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
         window.volume_slider.setValue(volume)
         assert window.speech.volume == volume
         assert f"{volume}%" in window.volume_label.text()
+
+
+def test_emergency_button_toggles_and_closing_disables_it(qtbot):
+    window = make_window(qtbot)
+    assert not window.emergency_button.isChecked()
+    window.emergency_button.click()
+    assert window.speech.emergency
+    assert "开" in window.emergency_button.text()
+    window.emergency_button.click()
+    assert not window.speech.emergency
+    window.emergency_button.click()
+    window.close()
+    assert not window.speech.emergency

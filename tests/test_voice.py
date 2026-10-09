@@ -197,3 +197,82 @@ def test_invalid_range(low, high, step):
 def test_decimal_price_is_spoken_with_point_and_each_digit(price, chinese, expected):
     from okx_gui.voice import spoken_price
     assert spoken_price(price, chinese) == expected
+
+
+def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, qtbot):
+    from PySide6.QtCore import QObject, Signal, QLocale
+    from PySide6.QtTextToSpeech import QTextToSpeech
+    from okx_gui import voice
+
+    class FakeNative(QObject):
+        stateChanged = Signal(object)
+        errorOccurred = Signal()
+
+        def __init__(self, commands, parent):
+            super().__init__(parent)
+            self.calls = []
+            self._state = QTextToSpeech.State.Ready
+
+        def engine(self):
+            return "test"
+
+        def availableLocales(self):
+            return [QLocale("zh_CN")]
+
+        def setLocale(self, locale):
+            pass
+
+        def setVolume(self, volume):
+            pass
+
+        def state(self):
+            return self._state
+
+        def say(self, text):
+            assert self._state == QTextToSpeech.State.Ready
+            self.calls.append(text)
+            self._state = QTextToSpeech.State.Speaking
+            self.stateChanged.emit(self._state)
+
+        def stop(self):
+            self._state = QTextToSpeech.State.Ready
+            self.stateChanged.emit(self._state)
+
+    monkeypatch.setattr(voice, "local_speech_commands", lambda: ("synth", "player"))
+    monkeypatch.setattr(voice, "WaveSpeechEngine", FakeNative)
+    service = voice.SpeechService()
+    service.set_emergency(True)
+    service._next()
+    assert not service.tts.calls  # Enabling alone must stay quiet.
+    service.announce("BTC", "82600", alarm=False)
+    service.tts.stop()
+    qtbot.wait(10)
+    assert not service.emergency_active  # Test speech cannot latch the alarm.
+    service.announce("BTC", "82700")
+    assert service.emergency_active
+    service.tts.stop()
+    qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
+    assert service.tts.calls[-1] == "情况紧急"
+    count = len(service.tts.calls)
+    service.tts.stop()
+    qtbot.waitUntil(lambda: len(service.tts.calls) == count + 1)
+    assert service.tts.calls[-1] == "情况紧急"
+    service.announce("ETH", "3000")
+    assert service.current == service.EMERGENCY  # Finish current audio first.
+    service.tts.stop()
+    qtbot.waitUntil(lambda: service.current == "ETH")
+    assert "3000" in service.tts.calls[-1]
+    service.cancel("ETH", interrupt=False)
+    service.tts.stop()
+    qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
+    service.announce("SOL", "100")
+    service.set_emergency(False)
+    qtbot.waitUntil(lambda: service.current == "SOL")
+    assert not service.emergency_active
+    service.tts.stop()
+    qtbot.wait(10)
+    assert service.current is None
+    service.set_emergency(True)
+    service._next()
+    assert service.current is None  # Re-enabling waits for a fresh price alarm.
+    service.cancel()
