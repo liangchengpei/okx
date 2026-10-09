@@ -1,8 +1,11 @@
+import os
+import subprocess
+import sys
 from decimal import Decimal
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal
 
-from okx_gui.app import MainWindow, main
+from okx_gui.app import MainWindow
 
 
 class FakeWorker(QObject):
@@ -36,32 +39,47 @@ class FakeWorker(QObject):
         return True
 
 
+class FakeSpeech(QObject):
+    error = Signal(str)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.calls = []
+        self.cancelled = []
+
+    def set_volume(self, percent):
+        self.volume = percent
+
+    def availability_error(self):
+        return ""
+
+    def announce(self, inst, price):
+        self.calls.append((inst, price))
+
+    def cancel(self, inst=None, *, interrupt=True):
+        self.cancelled.append(inst)
+
+
 def make_window(qtbot):
-    window = MainWindow(worker_factory=FakeWorker)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech)
     qtbot.addWidget(window)
     window.show()
     return window
 
 
-def test_add_validate_select_and_remove(qtbot):
+def test_add_validate_and_remove(qtbot):
     window = make_window(qtbot)
-    assert window.selected_contract == "SOL-USDT-SWAP"
     window.contract_input.setText(" doge-usdt-swap ")
     window.add_button.click()
     assert "DOGE-USDT-SWAP" in window.rows
     assert window.contract_input.text() == ""
     assert not window.add_contract("DOGE-USDT-SWAP")
     assert len(window.rows) == 4
-    assert window.selected_contract == "DOGE-USDT-SWAP"
     assert not window.add_contract("bad input")
     assert window.error_label.isVisible()
-    window.rows["BTC-USDT-SWAP"].radio.setChecked(True)
-    assert window.selected_contract == "BTC-USDT-SWAP"
     window.rows["BTC-USDT-SWAP"].remove_button.click()
-    assert window.selected_contract == "ETH-USDT-SWAP"
     for inst in list(window.rows):
         window.remove_contract(inst)
-    assert window.selected_contract is None
     assert window.empty_label.isVisible()
     assert not window.start_button.isEnabled()
     assert window.add_contract("BTC-USDT-SWAP")
@@ -105,6 +123,78 @@ def test_remove_all_stops_market_and_close_stops_worker(qtbot):
     assert worker.stopped
 
 
-def test_entry_point_runs_event_loop(qapp):
-    QTimer.singleShot(100, qapp.quit)
-    assert main() == 0
+def test_entry_point_runs_event_loop():
+    # Keep application quit state isolated from the shared pytest Qt event loop.
+    result = subprocess.run(
+        [sys.executable, "-c", "from PySide6.QtWidgets import QApplication; "
+         "from PySide6.QtCore import QTimer; from okx_gui.app import main; "
+         "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(main())"],
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_range_voice_and_return_to_silence(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    worker = window.worker
+    worker.ticker.emit(row.instrument, "82600", None)
+    row.low_input.setText("82400")
+    row.high_input.setText("82800")
+    row.step_input.setText("100")
+    row.voice_button.click()
+    assert not row.low_input.isEnabled()
+    for price in ("82400", "82800", "82801", "82850", "82900", "82800", "82700", "82399", "82300", "82400"):
+        worker.ticker.emit(row.instrument, price, None)
+    assert [p for _, p in window.speech.calls] == ["82801", "82900", "82399", "82300"]
+    assert row.instrument in window.speech.cancelled
+    assert "范围内静音" in row.voice_state.text()
+    row.voice_button.click()
+    assert row.ladder is None
+    assert row.low_input.isEnabled()
+    row.voice_button.click()
+    window.toggle_market()
+    assert row.ladder is None
+
+
+def test_voice_test_button_does_not_start_market(qtbot):
+    window = make_window(qtbot)
+    window.test_voice_button.click()
+    assert window.speech.calls == [("BTC-USDT-SWAP", "82600.05")]
+    assert window.worker is None
+
+
+def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, message: messages.append(message))
+    window = make_window(qtbot)
+    row = window.rows["BTC-USDT-SWAP"]
+    row.voice_button.click()
+    assert messages and row.ladder is None
+    row.low_input.setText("82800")
+    row.high_input.setText("82400")
+    row.step_input.setText("100")
+    row.voice_button.click()
+    assert "左侧低价格" in messages[-1]
+    row.low_input.setText("82400")
+    row.high_input.setText("82800")
+    row.voice_button.click()
+    assert "先启动行情" in messages[-1]
+    window.toggle_market()
+    window.worker.ticker.emit(row.instrument, "83000", None)
+    row.voice_button.click()
+    assert "当前价格 83000" in messages[-1]
+    assert row.ladder is None
+    assert row.low_input.isEnabled()
+    window.worker.ticker.emit(row.instrument, "82600", None)
+    row.voice_button.click()
+    assert row.ladder is not None
+    window.speech.error.emit("音频设备不可用")
+    assert row.ladder is None
+    for volume in (35, 0, 100):
+        window.volume_slider.setValue(volume)
+        assert window.speech.volume == volume
+        assert f"{volume}%" in window.volume_label.text()

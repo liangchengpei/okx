@@ -4,11 +4,12 @@ import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from okx_gui.market import MarketWorker
+from okx_gui.voice import PriceLadder, SpeechService
 
 STYLE = """
 QWidget { background: #fcfcfc; color: #16191d; font-size: 14px; }
@@ -28,10 +29,6 @@ QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
 QFrame#row { border-bottom: 1px solid #ededee; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
-QRadioButton { spacing: 10px; font-weight: 600; }
-QRadioButton::indicator { width: 14px; height: 14px; }
-QRadioButton::indicator:unchecked { border: 1px solid #bbb; border-radius: 8px; background: #aaa; }
-QRadioButton::indicator:checked { border: 1px solid #111; border-radius: 8px; background: #111; }
 QScrollArea { border: 0; background: transparent; }
 QScrollBar:vertical { background: #f6f6f6; width: 6px; margin: 0; }
 QScrollBar::handle:vertical { background: #d8dadd; border-radius: 3px; min-height: 24px; }
@@ -40,21 +37,22 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 
 
 class ContractRow(QFrame):
-    def __init__(self, instrument, remove):
+    def __init__(self, instrument, remove, toggle_voice):
         super().__init__()
         self.setObjectName("row")
         self.instrument = instrument
         self.setMinimumHeight(84)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 16, 14, 16)
-        self.radio = QRadioButton(instrument)
-        self.radio.setCursor(Qt.PointingHandCursor)
+        self.name = QLabel(instrument)
+        self.name.setStyleSheet("font-weight: 600;")
+        self.ladder = None
         identity = QVBoxLayout()
         identity.setSpacing(4)
-        identity.addWidget(self.radio)
+        identity.addWidget(self.name)
         self.state = QLabel("未启动监控")
         self.state.setObjectName("muted")
-        self.state.setContentsMargins(25, 0, 0, 0)
+
         identity.addWidget(self.state)
         layout.addLayout(identity, 1)
         quotes = QVBoxLayout()
@@ -67,6 +65,29 @@ class ContractRow(QFrame):
         quotes.addWidget(self.price)
         quotes.addWidget(self.change)
         layout.addLayout(quotes, 1)
+        voice = QVBoxLayout()
+        settings = QHBoxLayout()
+        self.high_input = QLineEdit()
+        self.high_input.setPlaceholderText("高价格")
+        self.high_input.setAccessibleName(f"{instrument} 高价格")
+        self.low_input = QLineEdit()
+        self.low_input.setPlaceholderText("低价格")
+        self.low_input.setAccessibleName(f"{instrument} 低价格")
+        self.low_input.setToolTip("低价格和高价格均需填写；范围内静音，范围外阶梯播报")
+        self.step_input = QLineEdit()
+        self.step_input.setPlaceholderText("价格间隔")
+        self.step_input.setAccessibleName(f"{instrument} 价格间隔")
+        for field in (self.low_input, self.high_input, self.step_input):
+            field.setFixedWidth(115)
+            settings.addWidget(field)
+        self.voice_button = QPushButton("开始播报")
+        self.voice_button.clicked.connect(lambda: toggle_voice(instrument))
+        settings.addWidget(self.voice_button)
+        voice.addLayout(settings)
+        self.voice_state = QLabel("播报未启动")
+        self.voice_state.setObjectName("muted")
+        voice.addWidget(self.voice_state)
+        layout.addLayout(voice)
         self.remove_button = QPushButton("×")
         self.remove_button.setObjectName("remove")
         self.remove_button.setFixedWidth(32)
@@ -85,15 +106,16 @@ class ContractRow(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, worker_factory=MarketWorker):
+    def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService):
         super().__init__()
         self.worker_factory = worker_factory
         self.worker = None
         self.rows = {}
-        self.selected_contract = None
+        self.speech = speech_factory(self)
+        self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(790, 550)
-        self.setMinimumSize(600, 430)
+        self.resize(1240, 550)
+        self.setMinimumSize(1140, 430)
         self.setStyleSheet(STYLE)
         root = QWidget()
         self.setCentralWidget(root)
@@ -137,7 +159,7 @@ class MainWindow(QMainWindow):
         table_layout.setContentsMargins(0, 8, 0, 0)
         table_header = QHBoxLayout()
         table_header.setContentsMargins(10, 0, 12, 0)
-        for text in ("合约", "实时价格 / 24h 涨跌 · 操作"):
+        for text in ("合约", "实时价格 / 24h 涨跌        低价格 / 高价格 / 价格间隔 / 语音播报"):
             label = QLabel(text)
             label.setObjectName("muted")
             table_header.addWidget(label, 1, Qt.AlignLeft if text == "合约" else Qt.AlignRight)
@@ -152,8 +174,6 @@ class MainWindow(QMainWindow):
         self.scroll.setWidget(content)
         table_layout.addWidget(self.scroll)
         layout.addWidget(table, 1)
-        self.group = QButtonGroup(self)
-        self.group.buttonToggled.connect(self.selection_changed)
         self.empty_label = QLabel("暂无合约，请在上方添加")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setObjectName("muted")
@@ -163,21 +183,26 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         controls.addWidget(self.status_label, 1)
+        self.volume_label = QLabel("音量 100%")
+        controls.addWidget(self.volume_label)
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setFixedWidth(130)
+        self.volume_slider.setAccessibleName("语音播报音量")
+        self.volume_slider.setToolTip("0 为静音，调整应用播报音量；下一条播报生效")
+        self.volume_slider.valueChanged.connect(self.change_volume)
+        controls.addWidget(self.volume_slider)
+        self.test_voice_button = QPushButton("测试语音")
+        self.test_voice_button.clicked.connect(self.test_voice)
+        controls.addWidget(self.test_voice_button)
         self.start_button = QPushButton("⊙ 启动行情")
         self.start_button.setObjectName("start")
         self.start_button.clicked.connect(self.toggle_market)
         controls.addWidget(self.start_button)
         layout.addLayout(controls)
-        self.selected_label = QLabel("选中合约：未选择")
-        self.selected_label.setContentsMargins(10, 8, 0, 0)
-        layout.addWidget(self.selected_label)
-        self.voice_hint = QLabel("阶梯式语音播报：预留设置区域，后续开放。")
-        self.voice_hint.setObjectName("muted")
-        self.voice_hint.setContentsMargins(10, 0, 0, 0)
-        layout.addWidget(self.voice_hint)
         for inst in ("BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"):
             self.add_contract(inst)
-        self.rows["SOL-USDT-SWAP"].radio.setChecked(True)
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -194,41 +219,96 @@ class MainWindow(QMainWindow):
             return False
         if inst in self.rows:
             self.show_error(f"{inst} 已在列表中。")
-            self.rows[inst].radio.setChecked(True)
             return False
-        row = ContractRow(inst, self.remove_contract)
+        row = ContractRow(inst, self.remove_contract, self.toggle_voice)
         self.rows[inst] = row
-        self.group.addButton(row.radio)
         self.row_layout.insertWidget(self.row_layout.count() - 1, row)
         self.empty_label.hide()
         self.show_error("")
-        if self.selected_contract is None:
-            row.radio.setChecked(True)
         self.sync_subscriptions()
         self.start_button.setEnabled(True)
         return True
 
     def remove_contract(self, inst):
         row = self.rows.pop(inst)
-        self.group.removeButton(row.radio)
+        self.speech.cancel(inst)
         self.row_layout.removeWidget(row)
         row.deleteLater()
-        if inst == self.selected_contract:
-            self.selected_contract = None
-            if self.rows:
-                next(iter(self.rows.values())).radio.setChecked(True)
-            else:
-                self.selected_label.setText("选中合约：未选择")
         self.empty_label.setVisible(not self.rows)
         self.sync_subscriptions()
         if not self.rows and self.worker:
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
 
-    def selection_changed(self, button, checked):
-        if checked:
-            self.selected_contract = button.text()
-            self.selected_label.setText(f"选中合约：{self.selected_contract}")
+    def change_volume(self, value):
+        self.volume_label.setText(f"音量 {value}%" if value else "音量 0%（静音）")
+        self.speech.set_volume(value)
+
+    def test_voice(self):
+        error = self.speech.availability_error()
+        if error:
+            self.show_error(error)
+            return
+        self.show_error("")
+        self.speech.announce("BTC-USDT-SWAP", "82600.05")
+
+    def toggle_voice(self, inst):
+        row = self.rows[inst]
+        if row.ladder is not None:
+            self.stop_voice(inst)
+            return
+        try:
+            ladder = PriceLadder(row.low_input.text(), row.high_input.text(), row.step_input.text())
+            if not self.worker or self.worker.isInterruptionRequested() or row.price.text() == "--":
+                raise ValueError("尚无有效的实时价格，请先启动行情并等待该合约报价，再开始播报。")
+            ladder.validate_current(row.price.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "播报设置不合法", str(exc))
+            return
+        error = self.speech.availability_error()
+        if error:
+            self.show_error(error)
+            return
+        if self.worker and self.worker.isInterruptionRequested():
+            self.show_error("行情正在停止，请稍后再开始播报。")
+            return
+        self.show_error("")
+        row.ladder = ladder
+        row.high_input.setEnabled(False)
+        row.low_input.setEnabled(False)
+        row.step_input.setEnabled(False)
+        row.voice_button.setText("停止播报")
+        row.voice_state.setText(f"范围内静音 [{ladder.lower}, {ladder.upper}]")
+        if not self.worker:
+            self.toggle_market()
+        if row.price.text() != "--":
+            self.process_voice(inst, row.price.text())
+
+    def stop_voice(self, inst):
+        row = self.rows[inst]
+        row.ladder = None
+        row.high_input.setEnabled(True)
+        row.low_input.setEnabled(True)
+        row.step_input.setEnabled(True)
+        row.voice_button.setText("开始播报")
+        row.voice_state.setText("播报未启动")
+        self.speech.cancel(inst)
+
+    def process_voice(self, inst, price):
+        row = self.rows[inst]
+        was_outside = row.ladder is not None and row.ladder.side is not None
+        if row.ladder and row.ladder.feed(price):
+            row.voice_state.setText(f"范围外 · 最近播报 {price}")
+            self.speech.announce(inst, price)
+        elif row.ladder and row.ladder.side is None:
+            if was_outside:
+                self.speech.cancel(inst, interrupt=False)
+            row.voice_state.setText(f"范围内静音 [{row.ladder.lower}, {row.ladder.upper}]")
+
+    def speech_failed(self, message):
+        for inst in self.rows:
+            self.stop_voice(inst)
+        self.show_error(message)
 
     def sync_subscriptions(self):
         if self.worker:
@@ -241,6 +321,8 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.start_button.setEnabled(False)
             self.status_label.setText("正在停止行情…")
+            for inst in self.rows:
+                self.stop_voice(inst)
             self.worker.stop()
             return
         if not self.rows:
@@ -260,12 +342,14 @@ class MainWindow(QMainWindow):
     def on_ticker(self, inst, price, change):
         if self.worker and not self.worker.isInterruptionRequested() and inst in self.rows:
             self.rows[inst].update_quote(price, change)
+            self.process_voice(inst, price)
             self.status_label.setText("● 行情监控中 · OKX 实时报价")
 
     def on_status(self, status):
         if self.worker and not self.worker.isInterruptionRequested():
             self.status_label.setText(status)
             if "中断" in status or "正在连接" in status:
+                self.speech.cancel(interrupt=False)
                 for row in self.rows.values():
                     row.setToolTip("连接中断 / 等待报价，显示值可能已过期")
                     row.state.setText("等待连接")
@@ -278,8 +362,11 @@ class MainWindow(QMainWindow):
         if inst in self.rows:
             self.rows[inst].setToolTip(f"订阅失败：{reason}")
             self.rows[inst].state.setText("订阅失败")
+            self.stop_voice(inst)
 
     def market_stopped(self):
+        for inst in self.rows:
+            self.stop_voice(inst)
         worker = self.worker
         self.worker = None
         if worker:
@@ -294,6 +381,7 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        self.speech.cancel()
         if self.worker and self.worker.isRunning():
             worker = self.worker
             worker.stop()
