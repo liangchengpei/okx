@@ -180,7 +180,7 @@ def test_speechd_selects_real_mandarin_voice_and_sets_volume(monkeypatch):
     assert service.chinese
 
 
-@pytest.mark.parametrize("low,high,step", [("", "82800", "100"), ("82400", "", "100"), ("82800", "82400", "100"), ("82600", "82600", "100"), ("NaN", "82800", "100"), ("82400", "82800", "0")])
+@pytest.mark.parametrize("low,high,step", [("-1", "82800", "100"), ("82400", "Infinity", "100"), ("82800", "82400", "100"), ("82600", "82600", "100"), ("NaN", "82800", "100"), ("82400", "82800", "0")])
 def test_invalid_range(low, high, step):
     with pytest.raises(ValueError):
         PriceLadder(low, high, step)
@@ -281,3 +281,35 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service._next()
     assert service.current is None  # Re-enabling waits for a fresh price alarm.
     service.cancel()
+
+
+def test_upper_only_defaults_lower_to_zero():
+    ladder = PriceLadder("  ", "82800", "100")
+    assert ladder.lower == 0
+    ladder.validate_current("82600")
+    assert not ladder.feed("0.000001")
+    assert not ladder.feed("82800")
+    assert ladder.feed("82801")
+    assert ladder.feed("82900")
+    with pytest.raises(ValueError, match="不处于设置范围"):
+        ladder.validate_current("82801")
+
+
+def test_lower_only_defaults_upper_to_infinity():
+    ladder = PriceLadder("82400", "", "100")
+    assert ladder.upper == Decimal("Infinity")
+    ladder.validate_current("1000000000000000")
+    assert not ladder.feed("1000000000000000")
+    assert not ladder.feed("82400")
+    assert ladder.feed("82399")
+    assert ladder.feed("82300")
+    with pytest.raises(ValueError, match="不处于设置范围"):
+        ladder.validate_current("82399")
+
+
+def test_both_blank_are_unbounded_and_explicit_zero_is_valid():
+    for low in ("", "0", "0.0"):
+        ladder = PriceLadder(low, "", "100")
+        for price in ("0.00001", "1", "1000000000000000000"):
+            ladder.validate_current(price)
+            assert not ladder.feed(price)

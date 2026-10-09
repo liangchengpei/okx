@@ -34,8 +34,14 @@ class PriceLadder:
     """Speak only outside an inclusive quiet range, using boundary-based steps."""
 
     def __init__(self, lower, upper, step):
-        self.lower = positive_decimal(str(lower))
-        self.upper = positive_decimal(str(upper))
+        lower_text, upper_text = str(lower).strip(), str(upper).strip()
+        try:
+            self.lower = Decimal(lower_text) if lower_text else Decimal(0)
+        except InvalidOperation:
+            raise ValueError("低价格必须为大于或等于 0 的有效数字，或留空。") from None
+        if not self.lower.is_finite() or self.lower < 0:
+            raise ValueError("低价格必须为大于或等于 0 的有效数字，或留空。")
+        self.upper = positive_decimal(upper_text) if upper_text else Decimal("Infinity")
         if self.lower >= self.upper:
             raise ValueError("左侧低价格必须小于右侧高价格。")
         self.step = positive_decimal(str(step))

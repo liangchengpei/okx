@@ -223,3 +223,19 @@ def test_per_contract_emergency_is_independent_and_cleans_on_delete_close(qtbot)
     assert window.speech.emergency == {eth.instrument}
     window.close()
     assert not window.speech.emergency
+
+
+def test_optional_range_fields_start_with_current_quote(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    window.worker.ticker.emit(row.instrument, "82600", None)
+    row.step_input.setText("100")
+    row.high_input.setText("82800")
+    row.voice_button.click()
+    assert row.ladder.lower == 0
+    row.voice_button.click()
+    row.high_input.clear()
+    row.low_input.setText("82400")
+    row.voice_button.click()
+    assert row.ladder.upper.is_infinite()
