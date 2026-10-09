@@ -239,3 +239,32 @@ def test_optional_range_fields_start_with_current_quote(qtbot):
     row.low_input.setText("82400")
     row.voice_button.click()
     assert row.ladder.upper.is_infinite()
+
+
+def test_stop_voice_disables_own_emergency_without_affecting_other_contract(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    btc = window.rows["BTC-USDT-SWAP"]
+    eth = window.rows["ETH-USDT-SWAP"]
+    for row, current, high in ((btc, "82600", "82800"), (eth, "3000", "3100")):
+        window.worker.ticker.emit(row.instrument, current, None)
+        row.high_input.setText(high)
+        row.step_input.setText("100")
+        row.voice_button.click()
+        row.emergency_button.click()
+    window.worker.ticker.emit(btc.instrument, "82900", None)
+    assert (btc.instrument, "82900") in window.speech.calls
+    btc.voice_button.click()
+    assert btc.ladder is None
+    assert not btc.emergency_button.isChecked()
+    assert btc.emergency_button.text() == "情况紧急：关"
+    assert btc.instrument not in window.speech.emergency
+    assert btc.instrument in window.speech.cancelled
+    assert eth.emergency_button.isChecked()
+    assert eth.instrument in window.speech.emergency
+    count = len(window.speech.calls)
+    window.worker.ticker.emit(btc.instrument, "83000", None)
+    assert len(window.speech.calls) == count
+    window.toggle_market()
+    assert not eth.emergency_button.isChecked()
+    assert not window.speech.emergency

@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
 
     def stop_voice(self, inst):
         row = self.rows[inst]
+        row.emergency_button.setChecked(False)
         row.ladder = None
         row.high_input.setEnabled(True)
         row.low_input.setEnabled(True)
