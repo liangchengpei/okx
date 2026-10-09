@@ -1,0 +1,12 @@
+pyproject.toml
+src/okx_gui/__init__.py
+src/okx_gui/__main__.py
+src/okx_gui/app.py
+src/okx_trader_gui.egg-info/PKG-INFO
+src/okx_trader_gui.egg-info/SOURCES.txt
+src/okx_trader_gui.egg-info/dependency_links.txt
+src/okx_trader_gui.egg-info/entry_points.txt
+src/okx_trader_gui.egg-info/requires.txt
+src/okx_trader_gui.egg-info/top_level.txt
+tests/test_dependencies.py
+tests/test_gui.py

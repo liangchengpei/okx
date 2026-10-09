@@ -1,0 +1,7 @@
+PySide6<7,>=6.8
+python-okx<0.5,>=0.4
+websockets<14,>=13
+
+[dev]
+pytest<10,>=8
+pytest-qt<5,>=4.4

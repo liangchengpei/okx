@@ -1,0 +1,2 @@
+[console_scripts]
+okx-gui = okx_gui.app:main

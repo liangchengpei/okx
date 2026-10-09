@@ -1,0 +1,24 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# VS Code
+.vscode/
+
+# API credentials
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Local databases
+*.db
+*.sqlite3
