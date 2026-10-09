@@ -200,15 +200,16 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         controls.addWidget(self.status_label, 1)
-        self.volume_label = QLabel("音量 100%")
+        self.volume_label = QLabel("音量 50%")
         controls.addWidget(self.volume_label)
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(100)
+        self.volume_slider.setValue(50)
         self.volume_slider.setFixedWidth(130)
         self.volume_slider.setAccessibleName("语音播报音量")
         self.volume_slider.setToolTip("0 为静音，调整应用播报音量；下一条播报生效")
         self.volume_slider.valueChanged.connect(self.change_volume)
+        self.change_volume(self.volume_slider.value())
         controls.addWidget(self.volume_slider)
         self.test_voice_button = QPushButton("测试语音")
         self.test_voice_button.clicked.connect(self.test_voice)
@@ -218,7 +219,7 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.toggle_market)
         controls.addWidget(self.start_button)
         layout.addLayout(controls)
-        for inst in ("BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"):
+        for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
 
     def show_error(self, message):

@@ -107,7 +107,7 @@ class SpeechService(QObject):
             self.tts = QTextToSpeech(engines[0], self) if engines else None
         self.chinese = False
         if self.tts:
-            self.tts.setVolume(1.0)
+            self.tts.setVolume(0.5)
             locales = self.tts.availableLocales()
             chinese = next((l for l in locales if l.language() == QLocale.Chinese), None)
             english = next((l for l in locales if l.name() == "en_US"), None)

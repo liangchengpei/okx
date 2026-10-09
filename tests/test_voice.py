@@ -176,7 +176,7 @@ def test_speechd_selects_real_mandarin_voice_and_sets_volume(monkeypatch):
     monkeypatch.setattr(voice, "QTextToSpeech", FakeSpeechd)
     service = voice.SpeechService(prefer_native=False)
     assert service.tts.selected.name() == "Chinese (Mandarin)"
-    assert service.tts.volume == 1.0
+    assert service.tts.volume == 0.5
     assert service.chinese
 
 

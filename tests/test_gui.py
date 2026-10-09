@@ -80,12 +80,15 @@ def make_window(qtbot):
 
 def test_add_validate_and_remove(qtbot):
     window = make_window(qtbot)
+    assert list(window.rows) == ["BTC-USDT-SWAP", "SPCX-USDT-SWAP"]
+    assert window.volume_slider.value() == 50
+    assert window.speech.volume == 50
     window.contract_input.setText(" doge-usdt-swap ")
     window.add_button.click()
     assert "DOGE-USDT-SWAP" in window.rows
     assert window.contract_input.text() == ""
     assert not window.add_contract("DOGE-USDT-SWAP")
-    assert len(window.rows) == 4
+    assert len(window.rows) == 3
     assert not window.add_contract("bad input")
     assert window.error_label.isVisible()
     window.rows["BTC-USDT-SWAP"].remove_button.click()
@@ -108,8 +111,8 @@ def test_live_updates_dynamic_subscriptions_and_stop(qtbot):
     assert row.change.text() == "+2.34%"
     window.add_contract("DOGE-USDT-SWAP")
     assert "DOGE-USDT-SWAP" in worker.instruments
-    window.remove_contract("SOL-USDT-SWAP")
-    assert "SOL-USDT-SWAP" not in worker.instruments
+    window.remove_contract("SPCX-USDT-SWAP")
+    assert "SPCX-USDT-SWAP" not in worker.instruments
     worker.status.emit("连接中断，3 秒后重试")
     assert row.price.text() == "--"
     worker.subscription_error.emit("DOGE-USDT-SWAP", "合约不存在")
@@ -127,7 +130,7 @@ def test_remove_all_stops_market_and_close_stops_worker(qtbot):
     for inst in list(window.rows):
         window.remove_contract(inst)
     assert worker.stopped
-    window.add_contract("ETH-USDT-SWAP")
+    window.add_contract("SPCX-USDT-SWAP")
     window.toggle_market()
     worker = window.worker
     window.close()
@@ -214,7 +217,7 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
 def test_per_contract_emergency_is_independent_and_cleans_on_delete_close(qtbot):
     window = make_window(qtbot)
     btc = window.rows["BTC-USDT-SWAP"]
-    eth = window.rows["ETH-USDT-SWAP"]
+    eth = window.rows["SPCX-USDT-SWAP"]
     assert not btc.emergency_buttons["high"].isChecked()
     btc.emergency_buttons["high"].click()
     assert window.speech.emergency == {(btc.instrument, "high")}
@@ -249,7 +252,7 @@ def test_stop_voice_disables_own_emergency_without_affecting_other_contract(qtbo
     window = make_window(qtbot)
     window.toggle_market()
     btc = window.rows["BTC-USDT-SWAP"]
-    eth = window.rows["ETH-USDT-SWAP"]
+    eth = window.rows["SPCX-USDT-SWAP"]
     for row, current, high in ((btc, "82600", "82800"), (eth, "3000", "3100")):
         window.worker.ticker.emit(row.instrument, current, None)
         row.high_input.setText(high)
