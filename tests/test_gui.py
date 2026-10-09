@@ -46,12 +46,16 @@ class FakeSpeech(QObject):
         super().__init__(parent)
         self.calls = []
         self.cancelled = []
+        self.emergency = set()
 
     def set_volume(self, percent):
         self.volume = percent
 
-    def set_emergency(self, enabled):
-        self.emergency = enabled
+    def set_emergency(self, inst, enabled):
+        if enabled:
+            self.emergency.add(inst)
+        else:
+            self.emergency.discard(inst)
 
     def availability_error(self):
         return ""
@@ -203,14 +207,19 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
         assert f"{volume}%" in window.volume_label.text()
 
 
-def test_emergency_button_toggles_and_closing_disables_it(qtbot):
+def test_per_contract_emergency_is_independent_and_cleans_on_delete_close(qtbot):
     window = make_window(qtbot)
-    assert not window.emergency_button.isChecked()
-    window.emergency_button.click()
-    assert window.speech.emergency
-    assert "开" in window.emergency_button.text()
-    window.emergency_button.click()
-    assert not window.speech.emergency
-    window.emergency_button.click()
+    btc = window.rows["BTC-USDT-SWAP"]
+    eth = window.rows["ETH-USDT-SWAP"]
+    assert not btc.emergency_button.isChecked()
+    btc.emergency_button.click()
+    assert window.speech.emergency == {btc.instrument}
+    assert not eth.emergency_button.isChecked()
+    eth.emergency_button.click()
+    btc.emergency_button.click()
+    assert window.speech.emergency == {eth.instrument}
+    btc.emergency_button.click()
+    window.remove_contract(btc.instrument)
+    assert window.speech.emergency == {eth.instrument}
     window.close()
     assert not window.speech.emergency

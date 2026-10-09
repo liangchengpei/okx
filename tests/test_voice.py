@@ -241,7 +241,7 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     monkeypatch.setattr(voice, "local_speech_commands", lambda: ("synth", "player"))
     monkeypatch.setattr(voice, "WaveSpeechEngine", FakeNative)
     service = voice.SpeechService()
-    service.set_emergency(True)
+    service.set_emergency("BTC", True)
     service._next()
     assert not service.tts.calls  # Enabling alone must stay quiet.
     service.announce("BTC", "82600", alarm=False)
@@ -257,6 +257,7 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == count + 1)
     assert service.tts.calls[-1] == "情况紧急"
+    service.set_emergency("ETH", True)
     service.announce("ETH", "3000")
     assert service.current == service.EMERGENCY  # Finish current audio first.
     service.tts.stop()
@@ -266,13 +267,17 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
     service.announce("SOL", "100")
-    service.set_emergency(False)
+    service.set_emergency("BTC", False)
     qtbot.waitUntil(lambda: service.current == "SOL")
-    assert not service.emergency_active
+    assert "BTC" not in service.emergency_active
+    assert "ETH" in service.emergency_active
     service.tts.stop()
+    qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
+    assert service.emergency_current == "ETH"
+    service.set_emergency("ETH", False)
     qtbot.wait(10)
     assert service.current is None
-    service.set_emergency(True)
+    service.set_emergency("BTC", True)
     service._next()
     assert service.current is None  # Re-enabling waits for a fresh price alarm.
     service.cancel()

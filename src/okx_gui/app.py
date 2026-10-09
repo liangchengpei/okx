@@ -38,7 +38,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 
 
 class ContractRow(QFrame):
-    def __init__(self, instrument, remove, toggle_voice):
+    def __init__(self, instrument, remove, toggle_voice, toggle_emergency):
         super().__init__()
         self.setObjectName("row")
         self.instrument = instrument
@@ -84,6 +84,12 @@ class ContractRow(QFrame):
         self.voice_button = QPushButton("开始播报")
         self.voice_button.clicked.connect(lambda: toggle_voice(instrument))
         settings.addWidget(self.voice_button)
+        self.emergency_button = QPushButton("情况紧急：关")
+        self.emergency_button.setObjectName("emergency")
+        self.emergency_button.setCheckable(True)
+        self.emergency_button.setToolTip("仅在本合约发生价格报警后循环播报；关闭仅停止本合约的紧急提示")
+        self.emergency_button.toggled.connect(lambda enabled: toggle_emergency(instrument, enabled))
+        settings.addWidget(self.emergency_button)
         voice.addLayout(settings)
         self.voice_state = QLabel("播报未启动")
         self.voice_state.setObjectName("muted")
@@ -115,8 +121,8 @@ class MainWindow(QMainWindow):
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(1240, 550)
-        self.setMinimumSize(1140, 430)
+        self.resize(1380, 550)
+        self.setMinimumSize(1270, 430)
         self.setStyleSheet(STYLE)
         root = QWidget()
         self.setCentralWidget(root)
@@ -184,12 +190,6 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         controls.addWidget(self.status_label, 1)
-        self.emergency_button = QPushButton("情况紧急：关")
-        self.emergency_button.setObjectName("emergency")
-        self.emergency_button.setCheckable(True)
-        self.emergency_button.setToolTip("打开后，首次价格报警启动循环；价格播报优先，关闭此按钮停止紧急循环")
-        self.emergency_button.toggled.connect(self.toggle_emergency)
-        controls.addWidget(self.emergency_button)
         self.volume_label = QLabel("音量 100%")
         controls.addWidget(self.volume_label)
         self.volume_slider = QSlider(Qt.Horizontal)
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         if inst in self.rows:
             self.show_error(f"{inst} 已在列表中。")
             return False
-        row = ContractRow(inst, self.remove_contract, self.toggle_voice)
+        row = ContractRow(inst, self.remove_contract, self.toggle_voice, self.toggle_emergency)
         self.rows[inst] = row
         self.row_layout.insertWidget(self.row_layout.count() - 1, row)
         self.empty_label.hide()
@@ -237,6 +237,7 @@ class MainWindow(QMainWindow):
         return True
 
     def remove_contract(self, inst):
+        self.speech.set_emergency(inst, False)
         row = self.rows.pop(inst)
         self.speech.cancel(inst)
         self.row_layout.removeWidget(row)
@@ -247,9 +248,9 @@ class MainWindow(QMainWindow):
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
 
-    def toggle_emergency(self, enabled):
-        self.emergency_button.setText("情况紧急：开" if enabled else "情况紧急：关")
-        self.speech.set_emergency(enabled)
+    def toggle_emergency(self, inst, enabled):
+        self.rows[inst].emergency_button.setText("情况紧急：开" if enabled else "情况紧急：关")
+        self.speech.set_emergency(inst, enabled)
 
     def change_volume(self, value):
         self.volume_label.setText(f"音量 {value}%" if value else "音量 0%（静音）")
@@ -317,7 +318,8 @@ class MainWindow(QMainWindow):
             row.voice_state.setText(f"范围内静音 [{row.ladder.lower}, {row.ladder.upper}]")
 
     def speech_failed(self, message):
-        self.emergency_button.setChecked(False)
+        for row in self.rows.values():
+            row.emergency_button.setChecked(False)
         for inst in self.rows:
             self.stop_voice(inst)
         self.show_error(message)
@@ -393,7 +395,8 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
-        self.emergency_button.setChecked(False)
+        for row in self.rows.values():
+            row.emergency_button.setChecked(False)
         self.speech.cancel()
         if self.worker and self.worker.isRunning():
             worker = self.worker

@@ -78,8 +78,9 @@ class SpeechService(QObject):
         self.pending = deque(maxlen=max_pending)
         self.current = None
         self._speaking = False
-        self.emergency_enabled = False
-        self.emergency_active = False
+        self.emergency_enabled = set()
+        self.emergency_active = {}
+        self.emergency_current = None
         commands = local_speech_commands() if prefer_native else None
         if commands:
             self.tts = WaveSpeechEngine(commands, self)
@@ -126,16 +127,18 @@ class SpeechService(QObject):
         if self.tts:
             self.tts.setVolume(max(0, min(100, percent)) / 100)
 
-    def set_emergency(self, enabled):
-        self.emergency_enabled = enabled
-        if not enabled:
-            self.emergency_active = False
-            if self.current == self.EMERGENCY:
+    def set_emergency(self, instrument, enabled):
+        if enabled:
+            self.emergency_enabled.add(instrument)
+        else:
+            self.emergency_enabled.discard(instrument)
+            self.emergency_active.pop(instrument, None)
+            if self.current == self.EMERGENCY and self.emergency_current == instrument:
                 self.cancel(self.EMERGENCY)
 
     def announce(self, instrument, price, *, alarm=True):
-        if alarm and self.emergency_enabled:
-            self.emergency_active = True
+        if alarm and instrument in self.emergency_enabled:
+            self.emergency_active.setdefault(instrument, None)
         # A full deque evicts only the oldest waiting utterance, never the active one.
         self.pending.append((instrument, price))
         self._next()
@@ -147,6 +150,10 @@ class SpeechService(QObject):
             return
         if not self.pending:
             if self.emergency_active:
+                instrument = next(iter(self.emergency_active))
+                self.emergency_active.pop(instrument)
+                self.emergency_active[instrument] = None  # Round-robin across active contracts.
+                self.emergency_current = instrument
                 self.current = self.EMERGENCY
                 self._speaking = False
                 self.tts.say("情况紧急" if self.chinese else "Emergency")
@@ -166,11 +173,13 @@ class SpeechService(QObject):
               and self.tts.state() == QTextToSpeech.State.Ready):
             self._speaking = False
             self.current = None
+            self.emergency_current = None
             QTimer.singleShot(0, self._next)
 
     def _failed(self):
-        self.emergency_active = False
-        self.emergency_enabled = False
+        self.emergency_active.clear()
+        self.emergency_enabled.clear()
+        self.emergency_current = None
         self.pending.clear()
         self.current = None
         self._speaking = False
@@ -185,6 +194,7 @@ class SpeechService(QObject):
             self.pending.extend(retained)
         if interrupt and (instrument is None or self.current == instrument):
             self.current = None
+            self.emergency_current = None
             self._speaking = False
             if self.tts:
                 self.tts.stop()
