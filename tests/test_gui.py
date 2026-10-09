@@ -51,7 +51,8 @@ class FakeSpeech(QObject):
     def set_volume(self, percent):
         self.volume = percent
 
-    def set_emergency(self, inst, enabled):
+    def set_emergency(self, inst, enabled, *, side=None):
+        inst = (inst, side) if side is not None else inst
         if enabled:
             self.emergency.add(inst)
         else:
@@ -60,7 +61,10 @@ class FakeSpeech(QObject):
     def availability_error(self):
         return ""
 
-    def announce(self, inst, price, *, alarm=True):
+    def trigger_emergency(self, inst, side):
+        pass
+
+    def announce(self, inst, price, *, alarm=True, side=None):
         self.calls.append((inst, price))
 
     def cancel(self, inst=None, *, interrupt=True):
@@ -211,16 +215,16 @@ def test_per_contract_emergency_is_independent_and_cleans_on_delete_close(qtbot)
     window = make_window(qtbot)
     btc = window.rows["BTC-USDT-SWAP"]
     eth = window.rows["ETH-USDT-SWAP"]
-    assert not btc.emergency_button.isChecked()
-    btc.emergency_button.click()
-    assert window.speech.emergency == {btc.instrument}
-    assert not eth.emergency_button.isChecked()
-    eth.emergency_button.click()
-    btc.emergency_button.click()
-    assert window.speech.emergency == {eth.instrument}
-    btc.emergency_button.click()
+    assert not btc.emergency_buttons["high"].isChecked()
+    btc.emergency_buttons["high"].click()
+    assert window.speech.emergency == {(btc.instrument, "high")}
+    assert not eth.emergency_buttons["high"].isChecked()
+    eth.emergency_buttons["high"].click()
+    btc.emergency_buttons["high"].click()
+    assert window.speech.emergency == {(eth.instrument, "high")}
+    btc.emergency_buttons["high"].click()
     window.remove_contract(btc.instrument)
-    assert window.speech.emergency == {eth.instrument}
+    assert window.speech.emergency == {(eth.instrument, "high")}
     window.close()
     assert not window.speech.emergency
 
@@ -251,20 +255,68 @@ def test_stop_voice_disables_own_emergency_without_affecting_other_contract(qtbo
         row.high_input.setText(high)
         row.step_input.setText("100")
         row.voice_button.click()
-        row.emergency_button.click()
+        row.emergency_buttons["high"].click()
     window.worker.ticker.emit(btc.instrument, "82900", None)
     assert (btc.instrument, "82900") in window.speech.calls
     btc.voice_button.click()
     assert btc.ladder is None
-    assert not btc.emergency_button.isChecked()
-    assert btc.emergency_button.text() == "情况紧急：关"
-    assert btc.instrument not in window.speech.emergency
+    assert not btc.emergency_buttons["high"].isChecked()
+    assert "关闭" in btc.emergency_buttons["high"].toolTip()
+    assert (btc.instrument, "high") not in window.speech.emergency
     assert btc.instrument in window.speech.cancelled
-    assert eth.emergency_button.isChecked()
-    assert eth.instrument in window.speech.emergency
+    assert eth.emergency_buttons["high"].isChecked()
+    assert (eth.instrument, "high") in window.speech.emergency
     count = len(window.speech.calls)
     window.worker.ticker.emit(btc.instrument, "83000", None)
     assert len(window.speech.calls) == count
     window.toggle_market()
-    assert not eth.emergency_button.isChecked()
+    assert not eth.emergency_buttons["high"].isChecked()
+    assert not window.speech.emergency
+
+
+def test_empty_interval_requires_emergency_and_prices_only_once(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, message: messages.append(message))
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    window.worker.ticker.emit(row.instrument, "82600", None)
+    row.high_input.setText("82800")
+    row.voice_button.click()
+    assert row.ladder is None
+    assert "情况紧急" in messages[-1]
+    row.emergency_buttons["high"].click()
+    row.voice_button.click()
+    assert row.ladder is not None and row.ladder.step is None
+    for price in ("82801", "82900", "82600", "83000"):
+        window.worker.ticker.emit(row.instrument, price, None)
+    assert window.speech.calls == [(row.instrument, "82801")]
+    row.emergency_buttons["high"].click()
+    assert row.ladder is None
+    assert row.voice_button.text() == "开始播报"
+    assert (row.instrument, "high") not in window.speech.emergency
+
+
+def test_bound_emergency_dots_are_independent_and_stop_together(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    window.worker.ticker.emit(row.instrument, "82600", None)
+    row.low_input.setText("82400")
+    row.high_input.setText("82800")
+    row.emergency_buttons["low"].click()
+    assert not row.emergency_buttons["high"].isChecked()
+    row.voice_button.click()
+    assert row.ladder is not None
+    window.worker.ticker.emit(row.instrument, "82900", None)
+    assert not window.speech.calls
+    window.worker.ticker.emit(row.instrument, "82399", None)
+    assert window.speech.calls == [(row.instrument, "82399")]
+    row.emergency_buttons["high"].click()
+    row.emergency_buttons["low"].click()
+    assert row.ladder is not None
+    assert window.speech.emergency == {(row.instrument, "high")}
+    row.voice_button.click()
+    assert not any(b.isChecked() for b in row.emergency_buttons.values())
     assert not window.speech.emergency

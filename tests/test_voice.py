@@ -281,6 +281,22 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service._next()
     assert service.current is None  # Re-enabling waits for a fresh price alarm.
     service.cancel()
+    service.set_emergency("BTC", False)
+    service.set_emergency("BTC", True, side="low")
+    service.announce("BTC", "83000", side="high")
+    assert not service.emergency_active
+    service.tts.stop()
+    qtbot.waitUntil(lambda: service.current is None)
+    service.announce("BTC", "82000", side="low")
+    assert ("BTC", "low") in service.emergency_active
+    service.set_emergency("BTC", True, side="high")
+    service.announce("BTC", "84000", side="high")
+    assert ("BTC", "high") in service.emergency_active
+    service.set_emergency("BTC", False, side="low")
+    assert ("BTC", "low") not in service.emergency_active
+    assert ("BTC", "high") in service.emergency_active
+    service.set_emergency("BTC", False, side="high")
+    service.cancel()
 
 
 def test_upper_only_defaults_lower_to_zero():
@@ -313,3 +329,22 @@ def test_both_blank_are_unbounded_and_explicit_zero_is_valid():
         for price in ("0.00001", "1", "1000000000000000000"):
             ladder.validate_current(price)
             assert not ladder.feed(price)
+
+
+@pytest.mark.parametrize("low,high,first", [("", "82800", "82801"), ("82400", "", "82399")])
+def test_empty_step_announces_price_once_until_restarted(low, high, first):
+    ladder = PriceLadder(low, high, " ", allow_once=True)
+    assert not ladder.feed("82600")
+    assert ladder.feed(first)
+    for price in ("83000", "82300", "82600", first, "84000"):
+        assert not ladder.feed(price)
+    assert PriceLadder(low, high, "", allow_once=True).feed(first)
+
+
+def test_empty_step_requires_emergency_and_at_least_one_boundary():
+    with pytest.raises(ValueError, match="情况紧急"):
+        PriceLadder("", "82800", "")
+    with pytest.raises(ValueError, match="至少填写"):
+        PriceLadder("", "", "", allow_once=True)
+    with pytest.raises(ValueError):
+        PriceLadder("", "82800", "0", allow_once=True)

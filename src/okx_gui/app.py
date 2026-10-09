@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from okx_gui.market import MarketWorker
-from okx_gui.voice import PriceLadder, SpeechService
+from okx_gui.voice import PriceLadder, SpeechService, positive_decimal
 
 STYLE = """
 QWidget { background: #fcfcfc; color: #16191d; font-size: 14px; }
@@ -24,7 +24,8 @@ QPushButton:hover { background: #e0e2e5; }
 QPushButton:disabled { color: #999; background: #f0f0f0; }
 QPushButton#start { background: #111; color: white; }
 QPushButton#start:hover { background: #333; }
-QPushButton#emergency:checked { background: #c83838; color: white; }
+QPushButton#emergency { background: #aaa; border: 1px solid #929292; border-radius: 8px; padding: 0; }
+QPushButton#emergency:checked { background: #dc3535; border-color: #b92525; }
 QPushButton#remove { background: transparent; color: #777; font-size: 20px; padding: 4px; }
 QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
@@ -69,28 +70,36 @@ class ContractRow(QFrame):
         voice = QVBoxLayout()
         settings = QHBoxLayout()
         self.high_input = QLineEdit()
-        self.high_input.setPlaceholderText("高价（默认 ∞）")
+        self.high_input.setPlaceholderText("高价 / ∞")
         self.high_input.setToolTip("留空默认为正无穷大，不限制上方价格")
         self.high_input.setAccessibleName(f"{instrument} 高价格")
         self.low_input = QLineEdit()
-        self.low_input.setPlaceholderText("低价（默认 0）")
+        self.low_input.setPlaceholderText("低价 / 0")
         self.low_input.setAccessibleName(f"{instrument} 低价格")
         self.low_input.setToolTip("留空默认为 0，不限制下方价格；范围内静音，范围外阶梯播报")
         self.step_input = QLineEdit()
         self.step_input.setPlaceholderText("价格间隔")
+        self.step_input.setToolTip("开启“情况紧急”后可留空：仅首次越界播报价格，随后循环紧急提示")
         self.step_input.setAccessibleName(f"{instrument} 价格间隔")
-        for field in (self.low_input, self.high_input, self.step_input):
+        self.emergency_buttons = {}
+        for side, field, label in (("low", self.low_input, "下限"), ("high", self.high_input, "上限")):
             field.setFixedWidth(115)
             settings.addWidget(field)
+            button = QPushButton()
+            button.setObjectName("emergency")
+            button.setCheckable(True)
+            button.setFixedSize(16, 16)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setAccessibleName(f"{instrument} {label}紧急开关")
+            button.setToolTip(f"{label}情况紧急：关闭（点击开启，红色为开启）")
+            button.toggled.connect(lambda enabled, bound=side: toggle_emergency(instrument, bound, enabled))
+            self.emergency_buttons[side] = button
+            settings.addWidget(button)
+        self.step_input.setFixedWidth(115)
+        settings.addWidget(self.step_input)
         self.voice_button = QPushButton("开始播报")
         self.voice_button.clicked.connect(lambda: toggle_voice(instrument))
         settings.addWidget(self.voice_button)
-        self.emergency_button = QPushButton("情况紧急：关")
-        self.emergency_button.setObjectName("emergency")
-        self.emergency_button.setCheckable(True)
-        self.emergency_button.setToolTip("仅在本合约发生价格报警后循环播报；关闭仅停止本合约的紧急提示")
-        self.emergency_button.toggled.connect(lambda enabled: toggle_emergency(instrument, enabled))
-        settings.addWidget(self.emergency_button)
         voice.addLayout(settings)
         self.voice_state = QLabel("播报未启动")
         self.voice_state.setObjectName("muted")
@@ -238,7 +247,8 @@ class MainWindow(QMainWindow):
         return True
 
     def remove_contract(self, inst):
-        self.speech.set_emergency(inst, False)
+        for side in ("low", "high"):
+            self.speech.set_emergency(inst, False, side=side)
         row = self.rows.pop(inst)
         self.speech.cancel(inst)
         self.row_layout.removeWidget(row)
@@ -249,9 +259,14 @@ class MainWindow(QMainWindow):
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
 
-    def toggle_emergency(self, inst, enabled):
-        self.rows[inst].emergency_button.setText("情况紧急：开" if enabled else "情况紧急：关")
-        self.speech.set_emergency(inst, enabled)
+    def toggle_emergency(self, inst, side, enabled):
+        row = self.rows[inst]
+        label = "下限" if side == "low" else "上限"
+        row.emergency_buttons[side].setToolTip(f"{label}情况紧急：{'开启' if enabled else '关闭'}（红色为开启）")
+        self.speech.set_emergency(inst, enabled, side=side)
+        if not enabled and row.ladder is not None and row.ladder.step is None:
+            if not any(button.isChecked() for button in row.emergency_buttons.values()):
+                self.stop_voice(inst)
 
     def change_volume(self, value):
         self.volume_label.setText(f"音量 {value}%" if value else "音量 0%（静音）")
@@ -271,7 +286,8 @@ class MainWindow(QMainWindow):
             self.stop_voice(inst)
             return
         try:
-            ladder = PriceLadder(row.low_input.text(), row.high_input.text(), row.step_input.text())
+            ladder = PriceLadder(row.low_input.text(), row.high_input.text(), row.step_input.text(),
+                                 allow_once=any(button.isChecked() for button in row.emergency_buttons.values()))
             if not self.worker or self.worker.isInterruptionRequested() or row.price.text() == "--":
                 raise ValueError("尚无有效的实时价格，请先启动行情并等待该合约报价，再开始播报。")
             ladder.validate_current(row.price.text())
@@ -299,8 +315,9 @@ class MainWindow(QMainWindow):
 
     def stop_voice(self, inst):
         row = self.rows[inst]
-        row.emergency_button.setChecked(False)
         row.ladder = None
+        for button in row.emergency_buttons.values():
+            button.setChecked(False)
         row.high_input.setEnabled(True)
         row.low_input.setEnabled(True)
         row.step_input.setEnabled(True)
@@ -311,17 +328,27 @@ class MainWindow(QMainWindow):
     def process_voice(self, inst, price):
         row = self.rows[inst]
         was_outside = row.ladder is not None and row.ladder.side is not None
-        if row.ladder and row.ladder.feed(price):
+        if row.ladder is None:
+            return
+        value = positive_decimal(price)
+        side = "low" if value < row.ladder.lower else "high" if value > row.ladder.upper else None
+        if row.ladder.step is None and side and not row.emergency_buttons[side].isChecked():
+            return
+        if row.ladder.feed(price):
             row.voice_state.setText(f"范围外 · 最近播报 {price}")
-            self.speech.announce(inst, price)
+            self.speech.announce(inst, price, side=side)
         elif row.ladder and row.ladder.side is None:
             if was_outside:
                 self.speech.cancel(inst, interrupt=False)
             row.voice_state.setText(f"范围内静音 [{row.ladder.lower}, {row.ladder.upper}]")
 
+        if side:
+            self.speech.trigger_emergency(inst, side)
+
     def speech_failed(self, message):
         for row in self.rows.values():
-            row.emergency_button.setChecked(False)
+            for button in row.emergency_buttons.values():
+                button.setChecked(False)
         for inst in self.rows:
             self.stop_voice(inst)
         self.show_error(message)
@@ -398,7 +425,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         for row in self.rows.values():
-            row.emergency_button.setChecked(False)
+            for button in row.emergency_buttons.values():
+                button.setChecked(False)
         self.speech.cancel()
         if self.worker and self.worker.isRunning():
             worker = self.worker

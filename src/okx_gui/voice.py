@@ -33,7 +33,7 @@ def spoken_price(price, chinese):
 class PriceLadder:
     """Speak only outside an inclusive quiet range, using boundary-based steps."""
 
-    def __init__(self, lower, upper, step):
+    def __init__(self, lower, upper, step, *, allow_once=False):
         lower_text, upper_text = str(lower).strip(), str(upper).strip()
         try:
             self.lower = Decimal(lower_text) if lower_text else Decimal(0)
@@ -44,7 +44,13 @@ class PriceLadder:
         self.upper = positive_decimal(upper_text) if upper_text else Decimal("Infinity")
         if self.lower >= self.upper:
             raise ValueError("左侧低价格必须小于右侧高价格。")
-        self.step = positive_decimal(str(step))
+        step_text = str(step).strip()
+        if not step_text and not allow_once:
+            raise ValueError("请填写价格间隔；如需只播报一次价格，请先开启该合约的“情况紧急”。")
+        if not step_text and not lower_text and not upper_text:
+            raise ValueError("单次价格播报模式请至少填写一个价格边界。")
+        self.step = positive_decimal(step_text) if step_text else None
+        self.once_fired = False
         self.level = None
         self.side = None
 
@@ -59,6 +65,12 @@ class PriceLadder:
             self.level = self.side = None
             return False
         side = "low" if price < self.lower else "high"
+        if self.step is None:
+            self.side = side
+            if self.once_fired:
+                return False
+            self.once_fired = True
+            return True
         boundary = self.lower if side == "low" else self.upper
         if self.side != side:
             self.side = side
@@ -133,7 +145,8 @@ class SpeechService(QObject):
         if self.tts:
             self.tts.setVolume(max(0, min(100, percent)) / 100)
 
-    def set_emergency(self, instrument, enabled):
+    def set_emergency(self, instrument, enabled, *, side=None):
+        instrument = (instrument, side) if side is not None else instrument
         if enabled:
             self.emergency_enabled.add(instrument)
         else:
@@ -142,9 +155,16 @@ class SpeechService(QObject):
             if self.current == self.EMERGENCY and self.emergency_current == instrument:
                 self.cancel(self.EMERGENCY)
 
-    def announce(self, instrument, price, *, alarm=True):
-        if alarm and instrument in self.emergency_enabled:
-            self.emergency_active.setdefault(instrument, None)
+    def trigger_emergency(self, instrument, side):
+        key = (instrument, side)
+        if key in self.emergency_enabled:
+            self.emergency_active.setdefault(key, None)
+            self._next()
+
+    def announce(self, instrument, price, *, alarm=True, side=None):
+        key = (instrument, side) if side is not None else instrument
+        if alarm and key in self.emergency_enabled:
+            self.emergency_active.setdefault(key, None)
         # A full deque evicts only the oldest waiting utterance, never the active one.
         self.pending.append((instrument, price))
         self._next()
