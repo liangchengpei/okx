@@ -323,3 +323,21 @@ def test_bound_emergency_dots_are_independent_and_stop_together(qtbot):
     row.voice_button.click()
     assert not any(b.isChecked() for b in row.emergency_buttons.values())
     assert not window.speech.emergency
+
+
+def test_no_bounds_captures_current_price_without_immediate_speech(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    window.worker.ticker.emit(row.instrument, "82600", None)
+    row.step_input.setText("100")
+    row.voice_button.click()
+    assert row.ladder.base == Decimal("82600")
+    assert "现价基准 82600" in row.voice_state.text()
+    assert not window.speech.calls
+    for price in ("82650", "82700", "82650", "82600", "82500"):
+        window.worker.ticker.emit(row.instrument, price, None)
+    assert [p for _, p in window.speech.calls] == ["82700", "82600", "82500"]
+    row.voice_button.click()
+    row.voice_button.click()
+    assert row.ladder.base == Decimal("82500")

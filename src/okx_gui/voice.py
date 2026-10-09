@@ -50,6 +50,8 @@ class PriceLadder:
         if not step_text and not lower_text and not upper_text:
             raise ValueError("单次价格播报模式请至少填写一个价格边界。")
         self.step = positive_decimal(step_text) if step_text else None
+        self.current_based = not lower_text and not upper_text
+        self.base = None
         self.once_fired = False
         self.level = None
         self.side = None
@@ -58,9 +60,22 @@ class PriceLadder:
         price = positive_decimal(str(price))
         if not self.lower <= price <= self.upper:
             raise ValueError(f"当前价格 {price} 不处于设置范围 [{self.lower}, {self.upper}] 内，请调整价格范围。")
+        if self.current_based and self.base is None:
+            self.base = self.level = price
 
     def feed(self, price):
         price = positive_decimal(str(price))
+        if self.current_based:
+            if self.base is None:
+                self.base = self.level = price
+                return False
+            distance = price - self.level
+            steps = (abs(distance) / self.step).to_integral_value(rounding=ROUND_FLOOR)
+            if not steps:
+                return False
+            self.side = "high" if distance > 0 else "low"
+            self.level += steps * self.step if distance > 0 else -steps * self.step
+            return True
         if self.lower <= price <= self.upper:
             self.level = self.side = None
             return False

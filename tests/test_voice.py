@@ -324,7 +324,7 @@ def test_lower_only_defaults_upper_to_infinity():
 
 
 def test_both_blank_are_unbounded_and_explicit_zero_is_valid():
-    for low in ("", "0", "0.0"):
+    for low in ("0", "0.0"):
         ladder = PriceLadder(low, "", "100")
         for price in ("0.00001", "1", "1000000000000000000"):
             ladder.validate_current(price)
@@ -348,3 +348,32 @@ def test_empty_step_requires_emergency_and_at_least_one_boundary():
         PriceLadder("", "", "", allow_once=True)
     with pytest.raises(ValueError):
         PriceLadder("", "82800", "0", allow_once=True)
+
+
+def test_no_bounds_uses_start_price_and_announces_bidirectional_steps():
+    ladder = PriceLadder(" ", "", "100")
+    ladder.validate_current("82600")
+    assert ladder.base == Decimal("82600")
+    assert not ladder.feed("82600")
+    assert not ladder.feed("82699.99")
+    assert ladder.feed("82700")
+    assert ladder.side == "high"
+    assert not ladder.feed("82650")
+    assert ladder.feed("82600")
+    assert ladder.side == "low"
+    assert ladder.feed("82500")
+    assert ladder.feed("82150")
+    assert ladder.level == Decimal("82200")
+    assert not ladder.feed("82150")
+    assert ladder.base == Decimal("82600")
+
+
+def test_current_based_decimal_precision_and_new_start():
+    ladder = PriceLadder("", "", "0.001")
+    assert not ladder.feed("0.12345")
+    assert not ladder.feed("0.124449")
+    assert ladder.feed("0.12445")
+    assert ladder.feed("0.12345")
+    restarted = PriceLadder("", "", "0.001")
+    restarted.validate_current("0.13")
+    assert restarted.base == Decimal("0.13")

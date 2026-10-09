@@ -79,7 +79,7 @@ class ContractRow(QFrame):
         self.low_input.setToolTip("留空默认为 0，不限制下方价格；范围内静音，范围外阶梯播报")
         self.step_input = QLineEdit()
         self.step_input.setPlaceholderText("价格间隔")
-        self.step_input.setToolTip("开启“情况紧急”后可留空：仅首次越界播报价格，随后循环紧急提示")
+        self.step_input.setToolTip("上下限都留空：以开始时现价为基准按间隔播报；开启紧急开关后可留空间隔，进入单次价格模式")
         self.step_input.setAccessibleName(f"{instrument} 价格间隔")
         self.emergency_buttons = {}
         for side, field, label in (("low", self.low_input, "下限"), ("high", self.high_input, "上限")):
@@ -308,7 +308,8 @@ class MainWindow(QMainWindow):
         row.low_input.setEnabled(False)
         row.step_input.setEnabled(False)
         row.voice_button.setText("停止播报")
-        row.voice_state.setText(f"范围内静音 [{ladder.lower}, {ladder.upper}]")
+        row.voice_state.setText(f"现价基准 {ladder.base} · 间隔 {ladder.step}" if ladder.current_based
+                                else f"范围内静音 [{ladder.lower}, {ladder.upper}]")
         if not self.worker:
             self.toggle_market()
         if row.price.text() != "--":
@@ -330,6 +331,11 @@ class MainWindow(QMainWindow):
         row = self.rows[inst]
         was_outside = row.ladder is not None and row.ladder.side is not None
         if row.ladder is None:
+            return
+        if row.ladder.current_based:
+            if row.ladder.feed(price):
+                row.voice_state.setText(f"基准 {row.ladder.base} · 最近播报 {price}")
+                self.speech.announce(inst, price, side=row.ladder.side)
             return
         value = positive_decimal(price)
         side = "low" if value < row.ladder.lower else "high" if value > row.ladder.upper else None
