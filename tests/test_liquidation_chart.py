@@ -42,7 +42,7 @@ def test_empty_records_still_show_zero_buckets():
 
 
 def test_chart_switches_period_without_regenerating_simulation(qtbot):
-    chart = LiquidationChart('BTC-USDT-SWAP')
+    chart = LiquidationChart('BTC-USDT-SWAP', simulated=True)
     qtbot.addWidget(chart)
     chart.timer.stop()
     chart.show()
@@ -63,7 +63,7 @@ def test_wheel_zoom_shows_more_buckets_and_preserves_period_and_history(qtbot):
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
-    chart = LiquidationChart('BTC-USDT-SWAP')
+    chart = LiquidationChart('BTC-USDT-SWAP', simulated=True)
     qtbot.addWidget(chart)
     chart.timer.stop()
     chart.resize(600, 300)

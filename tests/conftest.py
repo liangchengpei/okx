@@ -12,3 +12,9 @@ import pytest
 def isolated_application_data(monkeypatch, tmp_path):
     """GUI tests must never read or overwrite the user's persistent history."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+
+@pytest.fixture(autouse=True)
+def offline_liquidation_workers(monkeypatch):
+    from okx_gui.liquidation_feed import LiquidationWorker
+    monkeypatch.setattr(LiquidationWorker, "start", lambda self: None)

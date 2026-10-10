@@ -5,6 +5,7 @@ import math
 import random
 from zoneinfo import ZoneInfo
 
+from okx_gui.liquidation_feed import LiquidationWorker
 from okx_gui.liquidation_store import HISTORY_SECONDS, LiquidationRecord, LiquidationStore
 
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
@@ -175,17 +176,21 @@ class CountPlot(QWidget):
 
 
 class LiquidationChart(QFrame):
-    def __init__(self, instrument):
+    def __init__(self, instrument, *, simulated=False):
         super().__init__()
         self.setObjectName("liquidationChart")
         self.setAccessibleName(f"{instrument} liquidation-orders 图表区域")
         self.setMinimumHeight(280)
-        self.source = SimulatedLiquidations(instrument, datetime.now(timezone.utc).timestamp())
+        self.instrument = instrument
+        self.simulated = simulated
+        self.store = LiquidationStore()
+        self.source = SimulatedLiquidations(instrument, datetime.now(timezone.utc).timestamp(), self.store) if simulated else None
+        self.worker = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 4)
         layout.setSpacing(2)
         controls = QHBoxLayout()
-        title = QLabel("强平记录 · 模拟数据")
+        title = QLabel("强平记录 · 模拟数据" if simulated else "强平记录 · 实时数据")
         title.setObjectName("muted")
         title.setToolTip("在图内滚动鼠标滚轮：向下显示更多柱子，向上放大；显示10至125个时间区间")
         controls.addWidget(title)
@@ -198,28 +203,57 @@ class LiquidationChart(QFrame):
         self.interval.setAccessibleName(f"{instrument} 强平图聚合周期")
         for minutes in (1, 5, 15):
             self.interval.addItem(f"{minutes} 分钟", minutes)
-        self.interval.setToolTip("切换周期使用同一组模拟记录重新聚合；图内滚轮可横向缩放")
+        self.interval.setToolTip("切换周期使用同一组历史记录重新聚合；图内滚轮可横向缩放")
         controls.addWidget(self.interval)
         layout.addLayout(controls)
         platform_legend = QLabel("下段深色：币安　上段浅色：OKX")
         platform_legend.setObjectName("muted")
         layout.addWidget(platform_legend)
+        self.feed_status = QLabel("币安：连接中　OKX：连接中")
+        self.feed_status.setObjectName("muted")
+        self.feed_status.setWordWrap(True)
+        self.feed_status.setVisible(not simulated)
+        self._statuses = {"binance": "连接中", "okx": "连接中"}
+        layout.addWidget(self.feed_status)
         self.plot = CountPlot()
         layout.addWidget(self.plot, 1)
         self.interval.currentIndexChanged.connect(self.refresh)
         self.plot.visible_count_changed.connect(self.refresh)
         self.timer = QTimer(self)
-        self.timer.setInterval(5000)
-        self.timer.timeout.connect(self.simulate)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self.simulate if simulated else self.refresh)
         self.timer.start()
         self.refresh()
+        if not simulated:
+            self.worker = LiquidationWorker(instrument, self.store.path, self)
+            self.worker.status.connect(self.update_feed_status)
+            self.worker.start()
 
     def refresh(self):
         self.plot.minutes = self.interval.currentData()
-        self.plot.buckets = aggregate_records(self.source.records, self.plot.minutes,
-                                              datetime.now(timezone.utc).timestamp(), count=self.plot.visible_count)
+        now = datetime.now(timezone.utc).timestamp()
+        since = (math.floor(now / (self.plot.minutes * 60)) - self.plot.visible_count + 1) * self.plot.minutes * 60
+        records = self.source.records if self.simulated else self.store.load(self.instrument, "live", now, since=since) or []
+        self.plot.buckets = aggregate_records(records, self.plot.minutes, now, count=self.plot.visible_count)
         self.plot.update()
 
     def simulate(self):
         self.source.advance(datetime.now(timezone.utc).timestamp())
         self.refresh()
+
+    def update_feed_status(self, exchange, status):
+        self._statuses[exchange] = status
+        self.feed_status.setText(f"币安：{self._statuses['binance']}　OKX：{self._statuses['okx']}")
+
+    def shutdown(self):
+        self.timer.stop()
+        if self.worker:
+            self.worker.stop()
+            return self.worker.wait(7000)
+        return True
+
+    def closeEvent(self, event):
+        if self.shutdown():
+            event.accept()
+        else:
+            event.ignore()

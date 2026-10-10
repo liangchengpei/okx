@@ -56,7 +56,7 @@ class LiquidationStore:
         finally:
             db.close()
 
-    def load(self, instrument, source, now):
+    def load(self, instrument, source, now, since=None):
         """None means never initialized; [] means initialized but no recent events."""
         with self.connect() as db:
             db.execute("DELETE FROM liquidation_records WHERE timestamp < ?", (now - HISTORY_SECONDS,))
@@ -65,8 +65,8 @@ class LiquidationStore:
             if not exists:
                 return None
             rows = db.execute("""SELECT timestamp, side, event_id, exchange FROM liquidation_records
-                WHERE instrument=? AND source=? AND timestamp<=? ORDER BY timestamp, event_id""",
-                              (instrument, source, now)).fetchall()
+                WHERE instrument=? AND source=? AND timestamp<=? AND timestamp>=? ORDER BY timestamp, event_id""",
+                              (instrument, source, now, max(now - HISTORY_SECONDS, since if since is not None else now - HISTORY_SECONDS))).fetchall()
         return [LiquidationRecord(*row) for row in rows]
 
     def save(self, instrument, source, records, now):

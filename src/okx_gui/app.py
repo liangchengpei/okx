@@ -495,6 +495,9 @@ class MainWindow(QMainWindow):
         return True
 
     def remove_contract(self, inst):
+        if not self.rows[inst].chart_area.shutdown():
+            self.show_error("强平连接正在关闭，请稍后删除合约")
+            return
         for side in ("low", "high"):
             self.speech.set_emergency(inst, False, side=side)
         row = self.rows.pop(inst)
@@ -723,6 +726,10 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        for row in self.rows.values():
+            if not row.chart_area.shutdown():
+                event.ignore()
+                return
         if self.orders_worker and self.orders_worker.isRunning():
             self.orders_worker.stop()
             if not self.orders_worker.wait(7000):
