@@ -560,3 +560,25 @@ def test_monitor_splitter_resizes_both_lower_panels(qtbot):
     assert splitter.sizes()[1] >= 210
     splitter.moveSplitter(0, 1)
     assert splitter.sizes()[0] >= 150
+
+
+def test_monitor_height_follows_contract_count(qtbot):
+    window = make_window(qtbot)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    initial = window.main_splitter.sizes()[0]
+    assert window.add_contract('ETH-USDT-SWAP')
+    qtbot.waitUntil(lambda: window.main_splitter.sizes()[0] > initial)
+    grown = window.main_splitter.sizes()[0]
+    window.remove_contract('ETH-USDT-SWAP')
+    qtbot.waitUntil(lambda: window.main_splitter.sizes()[0] < grown)
+    assert abs(window.main_splitter.sizes()[0] - initial) <= 2
+    for index in range(15):
+        window.add_contract(f'TEST{index}-USDT-SWAP')
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert window.main_splitter.sizes()[1] >= window.trading_panel.minimumSizeHint().height()
+    assert window.scroll.verticalScrollBar().maximum() > 0
+    for instrument in list(window.rows):
+        window.remove_contract(instrument)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert window.empty_label.isVisible()
+    assert window.main_splitter.sizes()[0] == window.monitor_panel.minimumHeight()

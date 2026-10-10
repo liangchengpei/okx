@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         self.positions_worker = None
         self._positions_updated_at = None
         self.rows = {}
+        self._monitor_resize_pending = False
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
@@ -199,6 +200,7 @@ class MainWindow(QMainWindow):
         monitor_layout.setSpacing(12)
         self.main_splitter.addWidget(self.monitor_panel)
         table = QFrame()
+        self.monitor_table = table
         table.setObjectName("list")
         table_layout = QVBoxLayout(table)
         table_layout.setContentsMargins(0, 8, 0, 0)
@@ -368,6 +370,7 @@ class MainWindow(QMainWindow):
         self.show_error("")
         self.sync_subscriptions()
         self.start_button.setEnabled(True)
+        self.schedule_monitor_resize()
         return True
 
     def remove_contract(self, inst):
@@ -382,6 +385,33 @@ class MainWindow(QMainWindow):
         if not self.rows and self.worker:
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
+        self.schedule_monitor_resize()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.schedule_monitor_resize()
+
+    def schedule_monitor_resize(self):
+        if not self._monitor_resize_pending:
+            self._monitor_resize_pending = True
+            QTimer.singleShot(0, self.fit_monitor_height)
+
+    def fit_monitor_height(self):
+        self._monitor_resize_pending = False
+        if not self.isVisible():
+            return
+        self.monitor_panel.layout().activate()
+        self.monitor_table.layout().activate()
+        self.row_layout.activate()
+        rows_height = sum(max(row.minimumHeight(), row.sizeHint().height()) for row in self.rows.values())
+        if not self.rows:
+            rows_height = self.empty_label.sizeHint().height()
+        overhead = self.monitor_panel.height() - self.scroll.viewport().height()
+        total = sum(self.main_splitter.sizes())
+        bottom_minimum = max(self.trading_panel.minimumHeight(), self.trading_panel.minimumSizeHint().height())
+        desired = max(self.monitor_panel.minimumHeight(), rows_height + overhead)
+        height = min(desired, max(self.monitor_panel.minimumHeight(), total - bottom_minimum))
+        self.main_splitter.setSizes([height, total - height])
 
     def toggle_emergency(self, inst, side, enabled):
         row = self.rows[inst]
