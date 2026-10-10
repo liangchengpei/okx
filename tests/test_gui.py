@@ -94,6 +94,7 @@ def test_add_validate_and_remove(qtbot):
     window.contract_input.setText(" doge-usdt-swap ")
     window.add_button.click()
     assert "DOGE-USDT-SWAP" in window.rows
+    assert all(button.isChecked() for button in window.rows["DOGE-USDT-SWAP"].emergency_buttons.values())
     assert window.contract_input.text() == ""
     assert not window.add_contract("DOGE-USDT-SWAP")
     assert len(window.rows) == 3
@@ -162,6 +163,7 @@ def test_range_voice_and_return_to_silence(qtbot):
     window = make_window(qtbot)
     window.toggle_market()
     row = window.rows["BTC-USDT-SWAP"]
+    row.inside_checkbox.setChecked(False)
     worker = window.worker
     worker.ticker.emit(row.instrument, "82600", None)
     row.low_input.setText("82400")
@@ -228,6 +230,9 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
 
 def test_per_contract_emergency_is_independent_and_cleans_on_delete_close(qtbot):
     window = make_window(qtbot)
+    for contract in window.rows.values():
+        for button in contract.emergency_buttons.values():
+            button.setChecked(False)
     btc = window.rows["BTC-USDT-SWAP"]
     eth = window.rows["SPCX-USDT-SWAP"]
     assert not btc.emergency_buttons["high"].isChecked()
@@ -262,6 +267,9 @@ def test_optional_range_fields_start_with_current_quote(qtbot):
 
 def test_stop_voice_disables_own_emergency_without_affecting_other_contract(qtbot):
     window = make_window(qtbot)
+    for contract in window.rows.values():
+        for button in contract.emergency_buttons.values():
+            button.setChecked(False)
     window.toggle_market()
     btc = window.rows["BTC-USDT-SWAP"]
     eth = window.rows["SPCX-USDT-SWAP"]
@@ -294,8 +302,12 @@ def test_empty_interval_requires_emergency_and_prices_only_once(qtbot, monkeypat
     messages = []
     monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, message: messages.append(message))
     window = make_window(qtbot)
+    for contract in window.rows.values():
+        for button in contract.emergency_buttons.values():
+            button.setChecked(False)
     window.toggle_market()
     row = window.rows["BTC-USDT-SWAP"]
+    row.inside_checkbox.setChecked(False)
     window.worker.ticker.emit(row.instrument, "82600", None)
     row.high_input.setText("82800")
     row.voice_button.click()
@@ -315,8 +327,12 @@ def test_empty_interval_requires_emergency_and_prices_only_once(qtbot, monkeypat
 
 def test_bound_emergency_dots_are_independent_and_stop_together(qtbot):
     window = make_window(qtbot)
+    for contract in window.rows.values():
+        for button in contract.emergency_buttons.values():
+            button.setChecked(False)
     window.toggle_market()
     row = window.rows["BTC-USDT-SWAP"]
+    row.inside_checkbox.setChecked(False)
     window.worker.ticker.emit(row.instrument, "82600", None)
     row.low_input.setText("82400")
     row.high_input.setText("82800")
@@ -409,6 +425,9 @@ def test_market_starts_by_default_and_can_be_stopped(qtbot):
     assert worker.instruments == {"BTC-USDT-SWAP", "SPCX-USDT-SWAP"}
     assert window.start_button.text() == "停止行情"
     assert all(row.state.text() == "等待报价" for row in window.rows.values())
+    assert all(button.isChecked() for row in window.rows.values() for button in row.emergency_buttons.values())
+    assert window.speech.emergency == {(inst, side) for inst in window.rows for side in ("low", "high")}
+    assert all(row.inside_checkbox.isChecked() for row in window.rows.values())
     assert all(row.ladder is None for row in window.rows.values())
     assert not window.speech.calls
     window.start_button.click()
@@ -423,8 +442,12 @@ def test_market_starts_by_default_and_can_be_stopped(qtbot):
 
 def test_start_below_lower_bound_triggers_single_price_and_emergency(qtbot):
     window = make_window(qtbot)
+    for contract in window.rows.values():
+        for button in contract.emergency_buttons.values():
+            button.setChecked(False)
     window.toggle_market()
     row = window.rows["BTC-USDT-SWAP"]
+    row.inside_checkbox.setChecked(False)
     row.low_input.setText("82400")
     row.emergency_buttons["low"].setChecked(True)
     window.worker.ticker.emit(row.instrument, "82000", None)

@@ -114,6 +114,7 @@ class ContractRow(QFrame):
         self.voice_state = QLabel("播报未启动")
         self.voice_state.setObjectName("muted")
         self.inside_checkbox = QCheckBox("区间内播报")
+        self.inside_checkbox.setChecked(True)
         self.inside_checkbox.setAccessibleName(f"{instrument} 区间内播报")
         self.inside_checkbox.setToolTip("勾选后从启动时现价按间隔播报，回到区间时重新取基准；未勾选则区间内静音。上下限都留空时仍按现价基准播报。")
         voice_status = QHBoxLayout()
@@ -444,6 +445,8 @@ class MainWindow(QMainWindow):
             return False
         row = ContractRow(inst, self.remove_contract, self.toggle_voice, self.toggle_emergency)
         self.rows[inst] = row
+        for button in row.emergency_buttons.values():
+            button.setChecked(True)
         self.row_layout.insertWidget(self.row_layout.count() - 1, row)
         self.empty_label.hide()
         self.show_error("")
