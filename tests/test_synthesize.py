@@ -66,3 +66,35 @@ def test_neural_english_name_uses_cached_model_audio():
     assert names.audio("B T C", 22050) == expected
     names.audio("S P C X", 22050)
     assert calls == ["B T C", "S P C X"]
+
+
+def test_join_removes_boundary_silence_without_cutting_words():
+    np = pytest.importorskip("numpy")
+    from okx_gui.synthesize import join_speech
+
+    rate = 1000
+    word = np.tile(np.array([5000, -5000], dtype="<i2"), 100).tobytes()
+    silence = lambda count: b"\x00\x00" * count
+    english = silence(100) + word + silence(300)
+    chinese = silence(400) + word + silence(100)
+    result = join_speech(english, chinese, rate)
+    assert result.startswith(silence(100) + word)
+    assert result.endswith(word + silence(100))
+    first_end = result.index(word) + len(word)
+    next_start = result.index(word, first_end)
+    assert (next_start - first_end) // 2 == 40  # 15 + 15 + 10 ms.
+    assert len(result) < len(english) + len(chinese) - rate
+
+
+@pytest.mark.parametrize("english,chinese", [(b"", b"\x01\x00"), (b"\x01\x00", b""), (b"", b"")])
+def test_join_handles_missing_segment(english, chinese):
+    from okx_gui.synthesize import join_speech
+    assert join_speech(english, chinese, 22050) == english + chinese
+
+
+def test_join_handles_silent_segments_and_does_not_modify_input():
+    pytest.importorskip("numpy")
+    from okx_gui.synthesize import join_speech
+    silence = b"\x00\x00" * 100
+    assert set(join_speech(silence, silence, 1000)) == {0}
+    assert silence == b"\x00\x00" * 100

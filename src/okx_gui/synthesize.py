@@ -73,6 +73,37 @@ class NeuralEnglishNames:
         return frames
 
 
+def join_speech(english, chinese, sample_rate):
+    """Shorten only boundary silence, preserving word onsets and utterance ends."""
+    if not english or not chinese:
+        return english + chinese
+    import numpy as np
+
+    def boundary_samples(pcm, *, tail):
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+        window = max(1, round(sample_rate * 0.005))
+        padded = np.pad(samples, (0, (-len(samples)) % window))
+        rms = np.sqrt(np.mean(padded.reshape(-1, window) ** 2, axis=1))
+        active = np.flatnonzero(rms > max(60, rms.max() * 0.015))
+        if not len(active):
+            return samples
+        if tail:
+            end = (active[-1] + 1) * window + round(sample_rate * 0.015)
+            return samples[:end]
+        start = max(0, active[0] * window - round(sample_rate * 0.010))
+        return samples[start:]
+
+    first = boundary_samples(english, tail=True)
+    second = boundary_samples(chinese, tail=False)
+    # Fade just the join edges to prevent clicks after cutting model-generated silence.
+    fade = min(round(sample_rate * 0.003), len(first), len(second))
+    if fade:
+        first[-fade:] *= np.linspace(1, 0, fade)
+        second[:fade] *= np.linspace(0, 1, fade)
+    pause = np.zeros(round(sample_rate * 0.015))
+    return np.concatenate((first, pause, second)).astype("<i2").tobytes()
+
+
 def main():
     from piper import PiperVoice, SynthesisConfig
 
@@ -103,11 +134,17 @@ def main():
             wav.setnchannels(1)
             wav.setsampwidth(2)
             wav.setframerate(voice.config.sample_rate)
+            chinese_pcm = b"".join(
+                chunk.audio_int16_bytes for chunk in voice.synthesize(
+                    chinese_text, syn_config=SynthesisConfig(length_scale=1.0)
+                )
+            )
             if letters:
-                wav.writeframes(english_audio(letters, voice.config.sample_rate))
-                wav.writeframes(b"\x00\x00" * round(voice.config.sample_rate * 0.08))
-            for chunk in voice.synthesize(chinese_text, syn_config=SynthesisConfig(length_scale=1.0)):
-                wav.writeframes(chunk.audio_int16_bytes)
+                chinese_pcm = join_speech(
+                    english_audio(letters, voice.config.sample_rate),
+                    chinese_pcm, voice.config.sample_rate,
+                )
+            wav.writeframes(chinese_pcm)
 
     if not args.server:
         if not args.output:
