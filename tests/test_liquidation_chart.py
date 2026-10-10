@@ -1,0 +1,58 @@
+import pytest
+
+from okx_gui.liquidation_chart import LiquidationChart, LiquidationRecord, aggregate_records
+
+
+@pytest.mark.parametrize('minutes', [1, 5, 15])
+def test_buckets_are_aligned_and_count_records_at_boundaries(minutes):
+    seconds = minutes * 60
+    now = seconds * 100 + 30
+    start = seconds * 100
+    records = [LiquidationRecord(start - 0.1, 'long'),
+               LiquidationRecord(start, 'long'),
+               LiquidationRecord(start + 1, 'long'),
+               LiquidationRecord(now, 'short'),
+               LiquidationRecord(now + 1, 'short'),
+               LiquidationRecord(start - seconds * 20, 'long')]
+    buckets = aggregate_records(records, minutes, now)
+    assert len(buckets) == 20
+    assert all(b.start % seconds == 0 for b in buckets)
+    assert (buckets[-2].long_count, buckets[-2].short_count) == (1, 0)
+    assert (buckets[-1].long_count, buckets[-1].short_count) == (2, 1)
+    assert all(b.long_count == b.short_count == 0 for b in buckets[:-2])
+
+
+def test_five_and_fifteen_minute_counts_sum_one_minute_counts():
+    now = 900 * 100 + 899
+    records = [LiquidationRecord(now - offset, 'long' if offset % 2 else 'short')
+               for offset in range(0, 900, 11)]
+    one = aggregate_records(records, 1, now)
+    five = aggregate_records(records, 5, now)
+    fifteen = aggregate_records(records, 15, now)
+    assert sum(b.long_count for b in one[-15:]) == sum(b.long_count for b in five[-3:]) == fifteen[-1].long_count
+    assert sum(b.short_count for b in one[-15:]) == sum(b.short_count for b in five[-3:]) == fifteen[-1].short_count
+
+
+def test_empty_records_still_show_zero_buckets():
+    buckets = aggregate_records([], 1, 1000)
+    assert len(buckets) == 20
+    assert all(b.long_count == b.short_count == 0 for b in buckets)
+    with pytest.raises(ValueError):
+        aggregate_records([], 2, 1000)
+
+
+def test_chart_switches_period_without_regenerating_simulation(qtbot):
+    chart = LiquidationChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    chart.timer.stop()
+    chart.show()
+    original = list(chart.source.records)
+    for index, minutes in enumerate((1, 5, 15)):
+        chart.interval.setCurrentIndex(index)
+        assert chart.plot.minutes == minutes
+        assert chart.source.records == original
+        assert len(chart.plot.buckets) == 20
+        assert all(b.start % (minutes * 60) == 0 for b in chart.plot.buckets)
+    chart.simulate()
+    assert chart.plot.minutes == 15
+    assert chart.plot.grab().width() > 0

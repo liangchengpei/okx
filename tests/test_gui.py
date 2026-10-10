@@ -677,7 +677,7 @@ def test_contract_panels_have_chart_space_and_reflow_after_removal(qtbot):
     for row in (btc, spcx):
         assert row.chart_area.height() >= 240
         assert row.name.y() < row.chart_area.y() < row.low_input.y()
-        assert row.chart_area.layout().count() == 0
+        assert len(row.chart_area.plot.buckets) == 20
         assert row.price.y() > row.chart_area.y()
         assert row.price.x() < row.low_input.x()
         assert row.voice_button.width() == 32

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
+from okx_gui.liquidation_chart import LiquidationChart
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
@@ -117,11 +118,7 @@ class ContractRow(QFrame):
         self.remove_button.clicked.connect(lambda: remove(instrument))
         header.addWidget(self.remove_button)
         layout.addLayout(header)
-        self.chart_area = QFrame()
-        self.chart_area.setObjectName("liquidationChart")
-        self.chart_area.setAccessibleName(f"{instrument} liquidation-orders 图表区域")
-        self.chart_area.setMinimumHeight(240)
-        self.chart_area.setLayout(QVBoxLayout())
+        self.chart_area = LiquidationChart(instrument)
         layout.addWidget(self.chart_area, 1)
         voice = QVBoxLayout()
         voice.setContentsMargins(8, 0, 8, 8)
