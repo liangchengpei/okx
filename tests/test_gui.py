@@ -321,7 +321,7 @@ def test_empty_interval_requires_emergency_and_prices_only_once(qtbot, monkeypat
     assert window.speech.calls == [(row.instrument, "82801")]
     row.emergency_buttons["high"].click()
     assert row.ladder is None
-    assert row.voice_button.text() == "开始播报"
+    assert not row.voice_button.running
     assert (row.instrument, "high") not in window.speech.emergency
 
 
@@ -386,6 +386,8 @@ def test_inside_reporting_with_directional_boundary_notices(qtbot):
     row.emergency_buttons["high"].setChecked(True)
     row.voice_button.click()
     assert not window.speech.calls
+    assert row.voice_button.running
+    assert row.voice_button.toolTip() == "停止播报"
     assert not row.inside_checkbox.isEnabled()
     assert "范围内按间隔" in row.voice_state.text()
     for price in ("159", "160", "150", "201", "210", "190", "180", "99", "90", "100"):
@@ -663,3 +665,30 @@ def test_trading_splitters_adjust_each_panel_width(qtbot):
         assert splitter.handle(index).toolTip() == ''
         splitter.moveSplitter(0, index)
         assert all(splitter.sizes())
+
+
+def test_contract_panels_have_chart_space_and_reflow_after_removal(qtbot):
+    window = make_window(qtbot)
+    btc = window.rows['BTC-USDT-SWAP']
+    spcx = window.rows['SPCX-USDT-SWAP']
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert btc.y() == spcx.y()
+    assert btc.x() < spcx.x()
+    for row in (btc, spcx):
+        assert row.chart_area.height() >= 240
+        assert row.name.y() < row.chart_area.y() < row.low_input.y()
+        assert row.chart_area.layout().count() == 0
+        assert row.price.y() > row.chart_area.y()
+        assert row.price.x() < row.low_input.x()
+        assert row.voice_button.width() == 32
+    window.toggle_market()
+    window.worker.ticker.emit(btc.instrument, '82777.3', Decimal('0.24'))
+    qtbot.waitUntil(lambda: btc.price.width() >= btc.price.sizeHint().width())
+    assert btc.price.text() == '82777.3'
+    assert btc.change.text() == '+0.24%'
+    assert window.add_contract('ETH-USDT-SWAP')
+    eth = window.rows['ETH-USDT-SWAP']
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (1, 0)
+    window.remove_contract(btc.instrument)
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(spcx))[:2] == (0, 0)
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (0, 1)

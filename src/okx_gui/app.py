@@ -4,9 +4,10 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import QPainter, QPolygonF
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -37,7 +38,8 @@ QPushButton#emergency:checked { background: #dc3535; border-color: #b92525; }
 QPushButton#remove { background: transparent; color: #777; font-size: 20px; padding: 4px; }
 QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
-QFrame#row { border-bottom: 1px solid #ededee; }
+QFrame#row { border: 0; }
+QFrame#liquidationChart { border: 1px solid #858585; background: white; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
 QScrollArea { border: 0; background: transparent; }
 QSplitter#mainSplitter::handle:vertical { background: #e0e1e3; border: 0; }
@@ -48,37 +50,85 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
 
 
+class SpeechButton(QPushButton):
+    """Draw centered shapes without depending on font glyph bearings."""
+
+    def __init__(self, instrument):
+        super().__init__()
+        self.instrument = instrument
+        self.setFixedSize(32, 32)
+        self.setStyleSheet("padding: 0; border-radius: 16px;")
+        self.set_running(False)
+
+    def set_running(self, running):
+        self.running = running
+        action = "停止播报" if running else "开始播报"
+        self.setToolTip(action)
+        self.setAccessibleName(f"{self.instrument} {action}")
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self.palette().buttonText())
+        center = QRectF(self.rect()).center()
+        if self.running:
+            painter.drawRect(QRectF(center.x() - 5, center.y() - 5, 10, 10))
+        else:
+            # The triangle's centroid sits at the button center for visual balance.
+            painter.drawPolygon(QPolygonF([
+                center + QPointF(-4, -6), center + QPointF(-4, 6), center + QPointF(8, 0),
+            ]))
+
+
 class ContractRow(QFrame):
     def __init__(self, instrument, remove, toggle_voice, toggle_emergency):
         super().__init__()
         self.setObjectName("row")
         self.instrument = instrument
-        self.setMinimumHeight(84)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 16, 14, 16)
+        self.setMinimumWidth(550)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        header = QHBoxLayout()
+        header.setContentsMargins(8, 0, 4, 0)
         self.name = QLabel(instrument)
         self.name.setStyleSheet("font-weight: 600;")
         self.ladder = None
-        identity = QVBoxLayout()
-        identity.setSpacing(4)
-        identity.addWidget(self.name)
         self.state = QLabel("未启动监控")
         self.state.setObjectName("muted")
-
-        identity.addWidget(self.state)
-        layout.addLayout(identity, 1)
-        quotes = QVBoxLayout()
+        self.state.hide()
+        header.addStretch(1)
+        header.addWidget(self.name)
+        header.addStretch(1)
         self.price = QLabel("--")
-        self.price.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.price.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.price.setStyleSheet("font-size: 18px; font-weight: 600;")
         self.change = QLabel("--")
-        self.change.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.change.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.change.setObjectName("muted")
-        quotes.addWidget(self.price)
-        quotes.addWidget(self.change)
-        layout.addLayout(quotes, 1)
+        self.remove_button = QPushButton("×")
+        self.remove_button.setObjectName("remove")
+        self.remove_button.setFixedSize(28, 28)
+        self.remove_button.setToolTip(f"删除 {instrument}")
+        self.remove_button.clicked.connect(lambda: remove(instrument))
+        header.addWidget(self.remove_button)
+        layout.addLayout(header)
+        self.chart_area = QFrame()
+        self.chart_area.setObjectName("liquidationChart")
+        self.chart_area.setAccessibleName(f"{instrument} liquidation-orders 图表区域")
+        self.chart_area.setMinimumHeight(240)
+        self.chart_area.setLayout(QVBoxLayout())
+        layout.addWidget(self.chart_area, 1)
         voice = QVBoxLayout()
+        voice.setContentsMargins(8, 0, 8, 8)
         settings = QHBoxLayout()
+        settings.setSpacing(6)
+        settings.addWidget(self.price)
+        settings.addWidget(self.change)
+        settings.addStretch()
         self.high_input = QLineEdit()
         self.high_input.setPlaceholderText("高价 / ∞")
         self.high_input.setToolTip("留空默认为正无穷大，不限制上方价格")
@@ -93,7 +143,8 @@ class ContractRow(QFrame):
         self.step_input.setAccessibleName(f"{instrument} 价格间隔")
         self.emergency_buttons = {}
         for side, field, label in (("low", self.low_input, "下限"), ("high", self.high_input, "上限")):
-            field.setFixedWidth(115)
+            field.setMinimumWidth(65)
+            field.setMaximumWidth(100)
             settings.addWidget(field)
             button = QPushButton()
             button.setObjectName("emergency")
@@ -105,9 +156,10 @@ class ContractRow(QFrame):
             button.toggled.connect(lambda enabled, bound=side: toggle_emergency(instrument, bound, enabled))
             self.emergency_buttons[side] = button
             settings.addWidget(button)
-        self.step_input.setFixedWidth(115)
+        self.step_input.setMinimumWidth(65)
+        self.step_input.setMaximumWidth(100)
         settings.addWidget(self.step_input)
-        self.voice_button = QPushButton("开始播报")
+        self.voice_button = SpeechButton(instrument)
         self.voice_button.clicked.connect(lambda: toggle_voice(instrument))
         settings.addWidget(self.voice_button)
         voice.addLayout(settings)
@@ -119,15 +171,10 @@ class ContractRow(QFrame):
         self.inside_checkbox.setToolTip("勾选后从启动时现价按间隔播报，回到区间时重新取基准；未勾选则区间内静音。上下限都留空时仍按现价基准播报。")
         voice_status = QHBoxLayout()
         voice_status.addWidget(self.inside_checkbox)
+        self.voice_state.setWordWrap(True)
         voice_status.addWidget(self.voice_state, 1)
         voice.addLayout(voice_status)
         layout.addLayout(voice)
-        self.remove_button = QPushButton("×")
-        self.remove_button.setObjectName("remove")
-        self.remove_button.setFixedWidth(32)
-        self.remove_button.setToolTip(f"删除 {instrument}")
-        self.remove_button.clicked.connect(lambda: remove(instrument))
-        layout.addWidget(self.remove_button)
         self.setToolTip("未启动监控")
 
     def update_quote(self, price, change):
@@ -211,28 +258,22 @@ class MainWindow(QMainWindow):
         self.monitor_table = table
         table.setObjectName("list")
         table_layout = QVBoxLayout(table)
-        table_layout.setContentsMargins(0, 8, 0, 0)
-        table_header = QHBoxLayout()
-        table_header.setContentsMargins(10, 0, 12, 0)
-        for text in ("合约", "实时价格 / 24h 涨跌        低价格 / 高价格 / 价格间隔 / 语音播报"):
-            label = QLabel(text)
-            label.setObjectName("muted")
-            table_header.addWidget(label, 1, Qt.AlignLeft if text == "合约" else Qt.AlignRight)
-        table_layout.addLayout(table_header)
+        table_layout.setContentsMargins(10, 10, 10, 10)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         content = QWidget()
-        self.row_layout = QVBoxLayout(content)
+        self.row_layout = QGridLayout(content)
         self.row_layout.setContentsMargins(0, 0, 0, 0)
-        self.row_layout.setSpacing(0)
-        self.row_layout.addStretch()
+        self.row_layout.setSpacing(14)
+        self.row_layout.setColumnStretch(0, 1)
+        self.row_layout.setColumnStretch(1, 1)
         self.scroll.setWidget(content)
         table_layout.addWidget(self.scroll)
         monitor_layout.addWidget(table, 1)
         self.empty_label = QLabel("暂无合约，请在上方添加")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setObjectName("muted")
-        self.row_layout.insertWidget(0, self.empty_label)
+        self.row_layout.addWidget(self.empty_label, 0, 0, 1, 2)
         controls = QHBoxLayout()
         self.status_label = QLabel("行情监控未启动")
         self.status_label.setObjectName("muted")
@@ -447,7 +488,7 @@ class MainWindow(QMainWindow):
         self.rows[inst] = row
         for button in row.emergency_buttons.values():
             button.setChecked(True)
-        self.row_layout.insertWidget(self.row_layout.count() - 1, row)
+        self.relayout_contracts()
         self.empty_label.hide()
         self.show_error("")
         self.sync_subscriptions()
@@ -462,12 +503,19 @@ class MainWindow(QMainWindow):
         self.speech.cancel(inst)
         self.row_layout.removeWidget(row)
         row.deleteLater()
+        self.relayout_contracts()
         self.empty_label.setVisible(not self.rows)
         self.sync_subscriptions()
         if not self.rows and self.worker:
             self.toggle_market()
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
         self.schedule_monitor_resize()
+
+    def relayout_contracts(self):
+        for row in self.rows.values():
+            self.row_layout.removeWidget(row)
+        for index, row in enumerate(self.rows.values()):
+            self.row_layout.addWidget(row, index // 2, index % 2)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -485,7 +533,9 @@ class MainWindow(QMainWindow):
         self.monitor_panel.layout().activate()
         self.monitor_table.layout().activate()
         self.row_layout.activate()
-        rows_height = sum(max(row.minimumHeight(), row.sizeHint().height()) for row in self.rows.values())
+        heights = [max(row.minimumHeight(), row.sizeHint().height()) for row in self.rows.values()]
+        rows_height = sum(max(heights[index:index + 2]) for index in range(0, len(heights), 2))
+        rows_height += max(0, (len(heights) + 1) // 2 - 1) * self.row_layout.verticalSpacing()
         if not self.rows:
             rows_height = self.empty_label.sizeHint().height()
         overhead = self.monitor_panel.height() - self.scroll.viewport().height()
@@ -544,7 +594,7 @@ class MainWindow(QMainWindow):
         row.low_input.setEnabled(False)
         row.step_input.setEnabled(False)
         row.inside_checkbox.setEnabled(False)
-        row.voice_button.setText("停止播报")
+        row.voice_button.set_running(True)
         row.voice_state.setText(f"现价基准 {ladder.base} · 间隔 {ladder.step}" if ladder.current_based
                                 else self.range_voice_status(ladder))
         if not self.worker:
@@ -561,7 +611,7 @@ class MainWindow(QMainWindow):
         row.low_input.setEnabled(True)
         row.step_input.setEnabled(True)
         row.inside_checkbox.setEnabled(True)
-        row.voice_button.setText("开始播报")
+        row.voice_button.set_running(False)
         row.voice_state.setText("播报未启动")
         self.speech.cancel(inst)
 
