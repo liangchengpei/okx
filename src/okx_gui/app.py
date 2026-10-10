@@ -434,7 +434,7 @@ class MainWindow(QMainWindow):
         for row in self.rows.values():
             for button in row.emergency_buttons.values():
                 button.setChecked(False)
-        self.speech.cancel()
+        self.speech.shutdown()
         if self.worker and self.worker.isRunning():
             worker = self.worker
             worker.stop()

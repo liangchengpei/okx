@@ -226,6 +226,13 @@ class SpeechService(QObject):
         self._speaking = False
         self.error.emit(self.availability_error() or "语音播放失败，请检查系统音频设置。")
 
+    def shutdown(self):
+        self.emergency_enabled.clear()
+        self.emergency_active.clear()
+        self.cancel()
+        if self.tts and hasattr(self.tts, "shutdown"):
+            self.tts.shutdown()
+
     def cancel(self, instrument=None, *, interrupt=True):
         if instrument is None:
             self.pending.clear()

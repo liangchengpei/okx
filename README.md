@@ -58,7 +58,7 @@ mkdir -p .local/voices
 .venv/bin/python -m piper.download_voices zh_CN-huayan-medium --download-dir .local/voices
 ```
 
-模型约 60 MB，保存在 `.local/voices`，不提交到 Git。来源：[Piper](https://github.com/OHF-Voice/piper1-gpl)、[Huayan 模型](https://huggingface.co/rhasspy/piper-voices/tree/main/zh/zh_CN/huayan/medium)。每条价格语音使用后台子进程合成；重复的“情况紧急”音频在本次会话中缓存复用。
+模型约 60 MB，保存在 `.local/voices`，不提交到 Git。来源：[Piper](https://github.com/OHF-Voice/piper1-gpl)、[Huayan 模型](https://huggingface.co/rhasspy/piper-voices/tree/main/zh/zh_CN/huayan/medium)。GUI 启动时在后台预加载并预热 Piper 模型，所有价格播报复用同一个常驻合成进程，避免每条都重新加载模型。初次预加载约 3 秒（刚打开立即播报可能等待），本机预热后提交播报到播放器启动实测约 0.22–0.34 秒。取消单条语音不会卸载模型，关闭窗口会结束进程；重复的“情况紧急”音频在本次会话中缓存复用。
 
 Linux 需要 `pulseaudio-utils` 播放音频，可另安装 `espeak-ng` 作为备用：
 

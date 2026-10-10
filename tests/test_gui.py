@@ -70,6 +70,10 @@ class FakeSpeech(QObject):
     def cancel(self, inst=None, *, interrupt=True):
         self.cancelled.append(inst)
 
+    def shutdown(self):
+        self.emergency.clear()
+        self.cancel()
+
 
 def make_window(qtbot):
     window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech)

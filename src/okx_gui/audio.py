@@ -1,6 +1,7 @@
 """Offline neural or eSpeak speech rendered to WAV and played through desktop audio."""
 from pathlib import Path
 import importlib.util
+import json
 import shutil
 import sys
 import tempfile
@@ -28,6 +29,7 @@ def local_speech_commands():
 class WaveSpeechEngine(QObject):
     stateChanged = Signal(object)
     errorOccurred = Signal()
+    modelReady = Signal()
 
     def __init__(self, commands, parent=None):
         super().__init__(parent)
@@ -47,6 +49,46 @@ class WaveSpeechEngine(QObject):
         self._locale = QLocale("zh_CN")
         self._volume = 1.0
         self._emergency_cache = None
+        self._request_id = 0
+        self._closed = False
+        self._synth_buffer = b""
+        self.synth_process = QProcess(self)
+        self.synth_process.readyReadStandardOutput.connect(self._synth_output)
+        self.synth_process.errorOccurred.connect(self._synth_error)
+        self.synth_process.finished.connect(self._synth_exited)
+        if self.model:
+            self._start_synth()
+
+    def _start_synth(self):
+        if self._closed or self.synth_process.state() != QProcess.NotRunning:
+            return
+        self._synth_buffer = b""
+        self.synth_process.start(self.commands[0], ["-m", "okx_gui.synthesize", "--model", self.model, "--server"])
+
+    def _synth_output(self):
+        self._synth_buffer += bytes(self.synth_process.readAllStandardOutput())
+        while b"\n" in self._synth_buffer:
+            line, self._synth_buffer = self._synth_buffer.split(b"\n", 1)
+            try:
+                response = json.loads(line)
+            except ValueError:
+                continue
+            if response.get("ready"):
+                self.modelReady.emit()
+            elif response.get("id") == self._request_id and self._phase == "synthesize":
+                if response.get("ok"):
+                    self._finished(0, QProcess.NormalExit)
+                else:
+                    self._fail(f"语音合成失败：{response.get('error', '未知错误')}")
+
+    def _synth_error(self, error):
+        if not self._closed:
+            self._fail(f"语音模型进程不可用：{self.synth_process.errorString()}")
+
+    def _synth_exited(self, code, status):
+        if not self._closed and self._phase == "synthesize":
+            detail = bytes(self.synth_process.readAllStandardError()).decode(errors="replace")
+            self._fail(f"语音模型进程退出：{detail[-500:] or code}")
 
     def engine(self):
         return "piper-wave" if self.model else "espeak-wave"
@@ -86,10 +128,10 @@ class WaveSpeechEngine(QObject):
             return
         language = "cmn" if self._locale.language() == QLocale.Chinese else "en-us"
         if self.model:
-            self.process.start(self.commands[0], ["-m", "okx_gui.synthesize", "--model", self.model,
-                                                 "--output", self._wave])
-            self.process.write(text.encode("utf-8"))
-            self.process.closeWriteChannel()
+            self._start_synth()
+            self._request_id += 1
+            request = {"id": self._request_id, "text": text, "output": self._wave}
+            self.synth_process.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
         else:
             self.process.start(self.commands[0], ["-v", language, "-s", "150", "-a", "100", "-w", self._wave, text])
 
@@ -133,6 +175,7 @@ class WaveSpeechEngine(QObject):
         self.errorOccurred.emit()
 
     def stop(self):
+        self._request_id += 1  # Ignore results of cancelled synthesis without unloading the model.
         self._phase = None
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
@@ -140,3 +183,10 @@ class WaveSpeechEngine(QObject):
         self._cleanup()
         if self._state != QTextToSpeech.State.Ready:
             self._set_state(QTextToSpeech.State.Ready)
+
+    def shutdown(self):
+        self._closed = True
+        self.stop()
+        if self.synth_process.state() != QProcess.NotRunning:
+            self.synth_process.kill()
+            self.synth_process.waitForFinished(300)
