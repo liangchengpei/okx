@@ -18,9 +18,10 @@ class FakeWorker(QObject):
         super().__init__(parent)
         self.instruments = set(instruments)
         self.stopped = False
+        self.start_count = 0
 
     def start(self):
-        pass
+        self.start_count += 1
 
     def stop(self):
         self.stopped = True
@@ -79,7 +80,7 @@ class FakeSpeech(QObject):
 
 
 def make_window(qtbot):
-    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False)
     qtbot.addWidget(window)
     window.show()
     return window
@@ -148,8 +149,9 @@ def test_entry_point_runs_event_loop():
     # Keep application quit state isolated from the shared pytest Qt event loop.
     result = subprocess.run(
         [sys.executable, "-c", "from PySide6.QtWidgets import QApplication; "
-         "from PySide6.QtCore import QTimer; from okx_gui.app import main; "
-         "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(main())"],
+         "from PySide6.QtCore import QTimer; import okx_gui.app as gui; "
+         "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False); "
+         "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(gui.main())"],
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
         capture_output=True, text=True, timeout=10,
     )
@@ -393,3 +395,24 @@ def test_inside_reporting_without_interval_shows_dialog(qtbot, monkeypatch):
     row.voice_button.click()
     assert row.ladder is None
     assert messages == ["区间内播报需要填写价格间隔。"]
+
+
+def test_market_starts_by_default_and_can_be_stopped(qtbot):
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech)
+    qtbot.addWidget(window)
+    window.show()
+    worker = window.worker
+    assert worker.start_count == 1
+    assert worker.instruments == {"BTC-USDT-SWAP", "SPCX-USDT-SWAP"}
+    assert window.start_button.text() == "停止行情"
+    assert all(row.state.text() == "等待报价" for row in window.rows.values())
+    assert all(row.ladder is None for row in window.rows.values())
+    assert not window.speech.calls
+    window.start_button.click()
+    qtbot.wait(10)
+    assert worker.stopped
+    assert window.worker is None
+    window.start_button.click()
+    assert window.worker is not worker
+    assert window.worker.start_count == 1
+    window.close()

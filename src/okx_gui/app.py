@@ -129,7 +129,7 @@ class ContractRow(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService):
+    def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService, *, auto_start=True):
         super().__init__()
         self.worker_factory = worker_factory
         self.worker = None
@@ -227,6 +227,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
+        if auto_start:
+            self.toggle_market()
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -465,4 +467,5 @@ def main() -> int:
     app.setApplicationName("OKX Trader")
     window = MainWindow()
     window.show()
+    app.aboutToQuit.connect(window.close)
     return app.exec()
