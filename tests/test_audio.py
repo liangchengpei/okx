@@ -54,3 +54,37 @@ def test_audio_cancel_kills_process_and_cleans_file(qtbot, tmp_path):
     assert engine.state() == QTextToSpeech.State.Ready
     assert engine.process.state() == QProcess.NotRunning
     assert not Path(directory).exists()
+
+
+def test_neural_synthesis_receives_utf8_text_then_plays(qtbot, tmp_path):
+    received = tmp_path / "received"
+    marker = tmp_path / "played"
+    synth = executable(tmp_path / "neural", f'''import sys
+from pathlib import Path
+text = sys.stdin.buffer.read().decode("utf-8")
+Path({str(received)!r}).write_text(text)
+Path(sys.argv[sys.argv.index("--output")+1]).write_bytes(b"RIFF"+b"0"*100)
+''')
+    player = executable(tmp_path / "play", f'from pathlib import Path\nPath({str(marker)!r}).touch()\n')
+    engine = WaveSpeechEngine((synth, player, str(tmp_path / "voice.onnx")))
+    assert engine.engine() == "piper-wave"
+    engine.say("BTC 价格 82600 点 零五")
+    qtbot.waitUntil(lambda: engine.state() == QTextToSpeech.State.Ready)
+    assert received.read_text() == "BTC 价格 82600 点 零五"
+    assert marker.exists()
+
+
+def test_repeated_emergency_reuses_audio_without_resynthesis(qtbot, tmp_path):
+    counter = tmp_path / "count"
+    synth = executable(tmp_path / "synth", f'''import sys
+from pathlib import Path
+counter=Path({str(counter)!r})
+counter.write_text(counter.read_text()+"1" if counter.exists() else "1")
+Path(sys.argv[sys.argv.index("-w")+1]).write_bytes(b"RIFF"+b"0"*100)
+''')
+    play = executable(tmp_path / "play", "pass\n")
+    engine = WaveSpeechEngine((synth, play))
+    for _ in range(2):
+        engine.say("情况紧急")
+        qtbot.waitUntil(lambda: engine.state() == QTextToSpeech.State.Ready)
+    assert counter.read_text() == "1"

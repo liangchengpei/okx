@@ -1,5 +1,6 @@
-"""Linux offline speech rendered to WAV and played through desktop audio."""
+"""Offline neural or eSpeak speech rendered to WAV and played through desktop audio."""
 from pathlib import Path
+import importlib.util
 import shutil
 import sys
 import tempfile
@@ -17,6 +18,10 @@ def local_speech_commands():
         if local.is_file():
             executable = str(local)
     player = shutil.which("paplay")
+    model = Path(__file__).resolve().parents[2] / ".local/voices/zh_CN-huayan-medium.onnx"
+    if (player and model.is_file() and Path(str(model) + ".json").is_file()
+            and importlib.util.find_spec("piper") is not None):
+        return (sys.executable, player, str(model))
     return (executable, player) if executable and player else None
 
 
@@ -27,6 +32,7 @@ class WaveSpeechEngine(QObject):
     def __init__(self, commands, parent=None):
         super().__init__(parent)
         self.commands = commands
+        self.model = commands[2] if len(commands) > 2 else None
         self.process = QProcess(self)
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._process_error)
@@ -40,9 +46,10 @@ class WaveSpeechEngine(QObject):
         self._directory = None
         self._locale = QLocale("zh_CN")
         self._volume = 1.0
+        self._emergency_cache = None
 
     def engine(self):
-        return "espeak-wave"
+        return "piper-wave" if self.model else "espeak-wave"
 
     def availableLocales(self):
         return [QLocale("zh_CN"), QLocale("en_US")]
@@ -69,11 +76,22 @@ class WaveSpeechEngine(QObject):
         self._directory = tempfile.TemporaryDirectory(prefix="okx-speech-")
         self._wave = str(Path(self._directory.name) / "speech.wav")
         self._phase = "synthesize"
+        self._text = text
         self._error = ""
         self._set_state(QTextToSpeech.State.Speaking)
         self.timeout.start()
+        if text == "情况紧急" and self._emergency_cache is not None:
+            shutil.copyfile(Path(self._emergency_cache.name) / "emergency.wav", self._wave)
+            self._finished(0, QProcess.NormalExit)
+            return
         language = "cmn" if self._locale.language() == QLocale.Chinese else "en-us"
-        self.process.start(self.commands[0], ["-v", language, "-s", "150", "-a", "100", "-w", self._wave, text])
+        if self.model:
+            self.process.start(self.commands[0], ["-m", "okx_gui.synthesize", "--model", self.model,
+                                                 "--output", self._wave])
+            self.process.write(text.encode("utf-8"))
+            self.process.closeWriteChannel()
+        else:
+            self.process.start(self.commands[0], ["-v", language, "-s", "150", "-a", "100", "-w", self._wave, text])
 
     def _finished(self, code, exit_status):
         if self._phase is None:
@@ -87,6 +105,9 @@ class WaveSpeechEngine(QObject):
             if not path.exists() or path.stat().st_size <= 44:
                 self._fail("语音合成未产生有效音频")
                 return
+            if self._text == "情况紧急" and self._emergency_cache is None:
+                self._emergency_cache = tempfile.TemporaryDirectory(prefix="okx-emergency-")
+                shutil.copyfile(path, Path(self._emergency_cache.name) / "emergency.wav")
             self._phase = "play"
             self.process.start(self.commands[1], ["--client-name=OKX Trader", "--stream-name=合约语音播报",
                                                 f"--volume={round(self._volume * 65536)}", self._wave])

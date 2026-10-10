@@ -46,11 +46,21 @@
 
 价格间隔留空时，至少开启一个方向的圆点，只有开启方向的越界可以触发单次价格播报和紧急循环；关闭全部圆点会同时停止该合约播报。填入价格间隔时，普通价格播报仍适用于上下两个方向，紧急循环只由对应已开启圆点的方向触发。「测试语音」不会启动紧急循环，所有提示共用音量设置。
 
-Linux 优先使用 eSpeak NG 离线生成 WAV，再使用 `paplay` 通过桌面音频系统播放，合成和播放均由异步 QProcess 执行，不阻塞 GUI。该路径已经通过用户实际试听确认，避免 speech-dispatcher 模块崩溃后仍显示播放状态却没有声音的问题。所有合约共用一个串行语音队列，当前播报完成才播放下一条，默认最多等待 5 条；队列满时丢弃最旧的待播内容，保留最新请求。回到范围内或行情重连只清理待播内容，当前语音继续播完；手动停止、删除合约或关闭窗口会立即停止。支持取消以及子进程错误提示，不发送行情到外部语音服务。其他平台或缺少本地播放工具时回退到 Qt TextToSpeech。
+Linux 优先使用 Piper 神经网络普通话音色 `zh_CN-huayan-medium` 离线生成 WAV（缺少模型时回退到 eSpeak NG），再使用 `paplay` 通过桌面音频系统播放，合成和播放均由异步 QProcess 执行，不阻塞 GUI。该普通话音色已经通过用户实际试听确认，比原来的 eSpeak 更自然，避免 speech-dispatcher 模块崩溃后仍显示播放状态却没有声音的问题。所有合约共用一个串行语音队列，当前播报完成才播放下一条，默认最多等待 5 条；队列满时丢弃最旧的待播内容，保留最新请求。回到范围内或行情重连只清理待播内容，当前语音继续播完；手动停止、删除合约或关闭窗口会立即停止。支持取消以及子进程错误提示，不发送行情到外部语音服务。其他平台或缺少本地播放工具时回退到 Qt TextToSpeech。
 
 「测试语音」左侧提供 0–100% 音量滑块，默认 50%，0 为静音，调整对下一条播报生效，测试和行情播报共用此设置。点击「测试语音」可以不启动行情直接试听 BTC 合约价格 82600.05（明确读出“点零五”）。此设置只调节应用播报，实际声音还受系统音量和输出设备影响。
 
-Linux 推荐安装 `espeak-ng` 和 `pulseaudio-utils`：
+自然语音只需首次下载模型，运行播报时完全离线。安装与下载：
+
+```bash
+.venv/bin/python -m pip install -e '.[dev,voice]'
+mkdir -p .local/voices
+.venv/bin/python -m piper.download_voices zh_CN-huayan-medium --download-dir .local/voices
+```
+
+模型约 60 MB，保存在 `.local/voices`，不提交到 Git。来源：[Piper](https://github.com/OHF-Voice/piper1-gpl)、[Huayan 模型](https://huggingface.co/rhasspy/piper-voices/tree/main/zh/zh_CN/huayan/medium)。每条价格语音使用后台子进程合成；重复的“情况紧急”音频在本次会话中缓存复用。
+
+Linux 需要 `pulseaudio-utils` 播放音频，可另安装 `espeak-ng` 作为备用：
 
 ```bash
 sudo apt-get install espeak-ng pulseaudio-utils
@@ -118,6 +128,7 @@ src/okx_gui/app.py       GUI 与合约交互
 src/okx_gui/market.py    python-okx 公共 WebSocket 后台线程、重连与行情解析
 src/okx_gui/voice.py     阶梯触发规则和语音队列
 src/okx_gui/audio.py     Linux 离线音频合成和桌面播放
+src/okx_gui/synthesize.py  Piper 模型后台合成入口
 tests/                  离线测试
 run_gui.sh              本机桌面启动脚本
 pyproject.toml          工程依赖和 pytest 配置
