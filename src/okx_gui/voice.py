@@ -206,7 +206,8 @@ class SpeechService(QObject):
         self._speaking = False
         name = instrument.split("-", 1)[0]
         price = spoken_price(price, self.chinese)
-        text = f"{name}，价格 {price}" if self.chinese else f"{name}, price {price}"
+        text = (f"行情有变。{name}，价格 {price}" if self.chinese
+                else f"Market update. {name}, price {price}")
         self.tts.say(text)
 
     def _state_changed(self, state):

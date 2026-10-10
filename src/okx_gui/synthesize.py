@@ -19,6 +19,17 @@ def split_contract_name(text):
     return " ".join(match[1].upper()), text[match.end():]
 
 
+def split_price_announcement(text):
+    """Separate the Chinese notice without losing English contract pronunciation."""
+    prefix = "行情有变。"
+    body = text.removeprefix(prefix)
+    letters, price_text = split_contract_name(body)
+    if letters and body != text:
+        return prefix, letters, price_text
+    letters, price_text = split_contract_name(text)
+    return "", letters, price_text
+
+
 @lru_cache(maxsize=256)
 def english_name_audio(letters, sample_rate):
     """Cache short English names; never ask the Mandarin model to pronounce them."""
@@ -126,25 +137,34 @@ def main():
             english_voice, SynthesisConfig(length_scale=0.75)
         ).audio
 
+    def chinese_audio(text):
+        return b"".join(
+            chunk.audio_int16_bytes for chunk in voice.synthesize(
+                text, syn_config=SynthesisConfig(length_scale=1.0)
+            )
+        )
+
+    @lru_cache(maxsize=1)
+    def notice_audio():
+        return chinese_audio("行情有变。")
+
     def synthesize(text, output):
-        letters, chinese_text = split_contract_name(text)
+        notice, letters, chinese_text = split_price_announcement(text)
         if voice.config.espeak_voice != "cmn":
-            letters, chinese_text = None, text
+            notice, letters, chinese_text = "", None, text
         # Write one complete WAV so playback, volume and cancellation remain atomic.
         with wave.open(output, "wb") as wav:
             wav.setnchannels(1)
             wav.setsampwidth(2)
             wav.setframerate(voice.config.sample_rate)
-            chinese_pcm = b"".join(
-                chunk.audio_int16_bytes for chunk in voice.synthesize(
-                    chinese_text, syn_config=SynthesisConfig(length_scale=1.0)
-                )
-            )
+            chinese_pcm = chinese_audio(chinese_text)
             if letters:
                 chinese_pcm = join_speech(
                     english_audio(letters, voice.config.sample_rate),
                     chinese_pcm, voice.config.sample_rate,
                 )
+            if notice:
+                wav.writeframes(notice_audio())
             wav.writeframes(chinese_pcm)
 
     if not args.server:
@@ -154,8 +174,7 @@ def main():
         return
 
     # Warm inference kernels without playing audio before accepting requests.
-    for _ in voice.synthesize("预热"):
-        pass
+    notice_audio()
     if english_voice is not None:
         for letters in ("B T C", "S P C X"):
             english_audio(letters, voice.config.sample_rate)

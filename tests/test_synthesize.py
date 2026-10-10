@@ -98,3 +98,13 @@ def test_join_handles_silent_segments_and_does_not_modify_input():
     silence = b"\x00\x00" * 100
     assert set(join_speech(silence, silence, 1000)) == {0}
     assert silence == b"\x00\x00" * 100
+
+
+def test_notice_preserves_english_name_and_chinese_price():
+    from okx_gui.synthesize import split_price_announcement
+    assert split_price_announcement("行情有变。BTC，价格 八 二 六 零 零 点 零 五") == (
+        "行情有变。", "B T C", "价格 八 二 六 零 零 点 零 五"
+    )
+    assert split_price_announcement("BTC，价格 一") == ("", "B T C", "价格 一")
+    assert split_price_announcement("情况紧急") == ("", None, "情况紧急")
+    assert split_price_announcement("行情有变。其他内容") == ("", None, "行情有变。其他内容")

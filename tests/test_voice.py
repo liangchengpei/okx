@@ -97,7 +97,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     monkeypatch.setattr(voice, "QTextToSpeech", FakeTTS)
     service = voice.SpeechService(prefer_native=False, max_pending=2)
     service.announce("BTC-USDT-SWAP", "82600")
-    assert service.tts.calls == ["BTC, price eight two six zero zero"]
+    assert service.tts.calls == ["Market update. BTC, price eight two six zero zero"]
     service.announce("ETH-USDT-SWAP", "3000")
     service.announce("ETH-USDT-SWAP", "3010")
     service.announce("SOL-USDT-SWAP", "100")
@@ -111,7 +111,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     assert len(service.tts.calls) == 1
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == 2)
-    assert service.tts.calls[-1] == "ETH, price three zero one zero"
+    assert service.tts.calls[-1] == "Market update. ETH, price three zero one zero"
     service.announce("ETH-USDT-SWAP", "3020")
     service.cancel("ETH-USDT-SWAP", interrupt=False)
     assert service.current == "ETH-USDT-SWAP"
@@ -262,7 +262,7 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     assert service.current == service.EMERGENCY  # Finish current audio first.
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == "ETH")
-    assert service.tts.calls[-1] == "ETH，价格 三 零 零 零"
+    assert service.tts.calls[-1] == "行情有变。ETH，价格 三 零 零 零"
     service.cancel("ETH", interrupt=False)
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
