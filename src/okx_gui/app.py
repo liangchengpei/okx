@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
+from okx_gui.orders import OrdersWorker
+from okx_gui.order_widgets import OrderCard
 from okx_gui.voice import PriceLadder, SpeechService, positive_decimal
 
 STYLE = """
@@ -21,7 +23,7 @@ QMainWindow { background: #f5f6f8; }
 QFrame#card { border: 1px solid #dedfe2; border-radius: 18px; background: #fcfcfc; }
 QLabel#title { font-size: 19px; font-weight: 600; }
 QLabel#panelTitle { font-size: 16px; font-weight: 600; }
-QFrame#positionsPanel, QFrame#orderPanel { border: 1px solid #e0e1e3; border-radius: 12px; }
+QFrame#positionsPanel, QFrame#ordersPanel, QFrame#orderPanel { border: 1px solid #e0e1e3; border-radius: 12px; }
 QLabel#badge { background: #ededee; border-radius: 12px; padding: 4px 12px; font-size: 12px; }
 QLineEdit { border: 1px solid #d8dadd; border-radius: 20px; padding: 10px 15px; background: white; }
 QLineEdit:focus { border-color: #747b85; }
@@ -137,12 +139,16 @@ class ContractRow(QFrame):
 
 class MainWindow(QMainWindow):
     def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService, *, auto_start=True,
-                 positions_worker_factory=PositionsWorker, auto_start_positions=True):
+                 positions_worker_factory=PositionsWorker, auto_start_positions=True,
+                 orders_worker_factory=OrdersWorker, auto_start_orders=True):
         super().__init__()
         self.worker_factory = worker_factory
         self.worker = None
         self.positions_worker_factory = positions_worker_factory
         self.positions_worker = None
+        self.orders_worker_factory = orders_worker_factory
+        self.orders_worker = None
+        self._orders_updated_at = None
         self._positions_updated_at = None
         self.rows = {}
         self._monitor_resize_pending = False
@@ -255,6 +261,7 @@ class MainWindow(QMainWindow):
         trading_areas.setSpacing(16)
         for attribute, object_name, title in (
             ("positions_panel", "positionsPanel", "持仓信息"),
+            ("orders_panel", "ordersPanel", "委托"),
             ("order_panel", "orderPanel", "下单"),
         ):
             panel = QFrame()
@@ -268,7 +275,7 @@ class MainWindow(QMainWindow):
             panel_layout.addWidget(heading)
             panel_layout.addStretch()
             setattr(self, attribute, panel)
-            trading_areas.addWidget(panel, 1)
+            trading_areas.addWidget(panel, 2 if attribute == "order_panel" else 3)
         self.main_splitter.addWidget(self.trading_panel)
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 1)
@@ -276,12 +283,15 @@ class MainWindow(QMainWindow):
         handle = self.main_splitter.handle(1)
         handle.setCursor(Qt.SplitVCursor)
         self.setup_positions_panel()
+        self.setup_orders_panel()
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
         if auto_start:
             self.toggle_market()
         if auto_start_positions:
             self.refresh_positions()
+        if auto_start_orders:
+            self.start_orders()
 
     def setup_positions_panel(self):
         layout = self.positions_panel.layout()
@@ -346,6 +356,65 @@ class MainWindow(QMainWindow):
         if not self.position_cards:
             self.positions_empty.setText(f"暂无法确认持仓：{message}")
 
+
+    def setup_orders_panel(self):
+        layout = self.orders_panel.layout()
+        self.orders_heading = layout.takeAt(0).widget()
+        layout.takeAt(0)
+        layout.addWidget(self.orders_heading)
+        self.order_cards = []
+        self.orders_scroll = QScrollArea()
+        self.orders_scroll.setWidgetResizable(True)
+        self.orders_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        self.orders_cards_layout = QVBoxLayout(content)
+        self.orders_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.orders_cards_layout.setSpacing(0)
+        self.orders_cards_layout.addStretch()
+        self.orders_scroll.setWidget(content)
+        self.orders_scroll.hide()
+        layout.addWidget(self.orders_scroll, 1)
+        self.orders_empty = QLabel("委托尚未读取")
+        self.orders_empty.setTextFormat(Qt.PlainText)
+        self.orders_empty.setWordWrap(True)
+        self.orders_empty.setAlignment(Qt.AlignCenter)
+        self.orders_empty.setObjectName("muted")
+        layout.addWidget(self.orders_empty, 1)
+
+    def start_orders(self):
+        self.orders_worker = self.orders_worker_factory(self)
+        self.orders_worker.loading.connect(self.orders_loading)
+        self.orders_worker.updated.connect(self.update_orders)
+        self.orders_worker.error.connect(self.orders_failed)
+        self.orders_worker.start()
+
+    def orders_loading(self):
+        if not self._orders_updated_at:
+            self.orders_empty.setText("正在读取委托…")
+
+    def update_orders(self, orders, flag):
+        scroll_position = self.orders_scroll.verticalScrollBar().value()
+        for card in self.order_cards:
+            self.orders_cards_layout.removeWidget(card)
+            card.deleteLater()
+        self.order_cards = []
+        for order in orders:
+            card = OrderCard(order)
+            self.orders_cards_layout.insertWidget(len(self.order_cards), card)
+            self.order_cards.append(card)
+        self.orders_scroll.setVisible(bool(orders))
+        self.orders_scroll.verticalScrollBar().setValue(scroll_position)
+        self.orders_empty.setVisible(not orders)
+        self.orders_empty.setText("暂无委托")
+        self.orders_heading.setText(f"委托 ({len(orders)})")
+        self._orders_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
+        self.orders_panel.setToolTip("")
+
+    def orders_failed(self, message):
+        suffix = f"，显示上次数据（{self._orders_updated_at}）" if self._orders_updated_at else ""
+        self.orders_panel.setToolTip(f"委托读取失败{suffix}：{message}")
+        if not self.order_cards:
+            self.orders_empty.setText(f"暂无法确认委托：{message}")
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -593,6 +662,12 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if self.orders_worker and self.orders_worker.isRunning():
+            self.orders_worker.stop()
+            if not self.orders_worker.wait(7000):
+                self.orders_panel.setToolTip("正在关闭委托连接，请稍后关闭窗口")
+                event.ignore()
+                return
         if self.positions_worker and self.positions_worker.isRunning():
             self.positions_worker.stop()
             if not self.positions_worker.wait(7000):

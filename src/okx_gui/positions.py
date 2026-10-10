@@ -216,6 +216,7 @@ def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache
 
 
 class PositionsWorker(QThread):
+    resource_name = "持仓"
     loading = Signal()
     updated = Signal(object, str)
     error = Signal(str)
@@ -250,6 +251,6 @@ class PositionsWorker(QThread):
                     self.error.emit(str(exc))
             except Exception:
                 if not self.isInterruptionRequested():
-                    self.error.emit("持仓读取失败，请检查配置后刷新。")
+                    self.error.emit(f"{self.resource_name}读取失败，请检查配置并等待自动重试。")
             if not self.isInterruptionRequested():
                 self._wake.wait(self.interval)

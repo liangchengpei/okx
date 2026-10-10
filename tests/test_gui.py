@@ -80,7 +80,7 @@ class FakeSpeech(QObject):
 
 
 def make_window(qtbot):
-    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False, auto_start_positions=False)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False, auto_start_positions=False, auto_start_orders=False)
     qtbot.addWidget(window)
     window.show()
     return window
@@ -150,7 +150,7 @@ def test_entry_point_runs_event_loop():
     result = subprocess.run(
         [sys.executable, "-c", "from PySide6.QtWidgets import QApplication; "
          "from PySide6.QtCore import QTimer; import okx_gui.app as gui; "
-         "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False, auto_start_positions=False); "
+         "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False, auto_start_positions=False, auto_start_orders=False); "
          "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(gui.main())"],
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
         capture_output=True, text=True, timeout=10,
@@ -401,7 +401,7 @@ def test_inside_reporting_without_interval_shows_dialog(qtbot, monkeypatch):
 
 
 def test_market_starts_by_default_and_can_be_stopped(qtbot):
-    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start_positions=False)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start_positions=False, auto_start_orders=False)
     qtbot.addWidget(window)
     window.show()
     worker = window.worker
@@ -469,7 +469,7 @@ def test_positions_auto_load_render_refresh_and_stale_error(qtbot):
     from okx_gui.positions import Position
 
     window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech,
-                        auto_start=False, positions_worker_factory=FakePositionsWorker)
+                        auto_start=False, positions_worker_factory=FakePositionsWorker, auto_start_orders=False)
     qtbot.addWidget(window)
     window.show()
     worker = window.positions_worker
@@ -496,7 +496,7 @@ def test_positions_auto_load_render_refresh_and_stale_error(qtbot):
 
 def test_positions_first_failure_does_not_claim_no_positions(qtbot):
     window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech,
-                        auto_start=False, positions_worker_factory=FakePositionsWorker)
+                        auto_start=False, positions_worker_factory=FakePositionsWorker, auto_start_orders=False)
     qtbot.addWidget(window)
     window.positions_worker.error.emit('缺少 passphrase')
     assert '暂无法确认持仓' in window.positions_empty.text()
@@ -582,3 +582,36 @@ def test_monitor_height_follows_contract_count(qtbot):
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     assert window.empty_label.isVisible()
     assert window.main_splitter.sizes()[0] == window.monitor_panel.minimumHeight()
+
+
+def test_orders_panel_between_positions_and_order_entry(qtbot):
+    from okx_gui.orders import parse_orders
+
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech,
+                        auto_start=False, auto_start_positions=False,
+                        orders_worker_factory=FakePositionsWorker)
+    qtbot.addWidget(window)
+    window.show()
+    worker = window.orders_worker
+    assert worker.running
+    assert window.positions_panel.x() < window.orders_panel.x() < window.order_panel.x()
+    orders = parse_orders([dict(algoId='1', _algo=True, instId='BTC-USDT-SWAP',
+                               instType='SWAP', side='buy', tdMode='cross', lever='100',
+                               ordType='trigger', triggerPx='84400', triggerPxType='last',
+                               ordPx='84403', sz='400', cTime='1791568435000')],
+                          {'BTC-USDT-SWAP': dict(ctVal='0.01', ctValCcy='BTC')})
+    worker.updated.emit(orders, '0')
+    assert window.orders_heading.text() == '委托 (1)'
+    assert len(window.order_cards) == 1
+    assert window.order_cards[0].values['触发价格'].text() == '最新 84,400'
+    assert window.order_cards[0].values['委托数量 (BTC)'].text() == '4'
+    assert window.orders_scroll.isVisible()
+    worker.error.emit('网络异常')
+    assert len(window.order_cards) == 1
+    assert '上次数据' in window.orders_panel.toolTip()
+    worker.updated.emit([], '0')
+    assert window.orders_heading.text() == '委托 (0)'
+    assert window.orders_empty.text() == '暂无委托'
+    assert window.orders_empty.isVisible()
+    window.close()
+    assert not worker.running
