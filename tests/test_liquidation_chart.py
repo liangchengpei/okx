@@ -51,7 +51,7 @@ def test_chart_switches_period_without_regenerating_simulation(qtbot):
         chart.interval.setCurrentIndex(index)
         assert chart.plot.minutes == minutes
         assert chart.source.records == original
-        assert len(chart.plot.buckets) == 20
+        assert len(chart.plot.buckets) == 44
         assert all(b.start % (minutes * 60) == 0 for b in chart.plot.buckets)
     chart.simulate()
     assert chart.plot.minutes == 15
@@ -78,21 +78,21 @@ def test_wheel_zoom_shows_more_buckets_and_preserves_period_and_history(qtbot):
         assert event.isAccepted()
 
     wheel(-120)
-    assert len(chart.plot.buckets) > 20
+    assert len(chart.plot.buckets) > 44
     assert chart.plot.minutes == 1
     assert chart.source.records == original
     latest = chart.plot.buckets[-1].start
     for _ in range(20):
         wheel(-120)
-    assert len(chart.plot.buckets) == 96
+    assert len(chart.plot.buckets) == 125
     assert chart.plot.buckets[-1].start == latest
     chart.interval.setCurrentIndex(2)
-    assert len(chart.plot.buckets) == 96
+    assert len(chart.plot.buckets) == 125
     assert chart.plot.minutes == 15
     assert chart.source.records == original
     chart.simulate()
-    assert len(chart.plot.buckets) == 96
+    assert len(chart.plot.buckets) == 125
     for _ in range(25):
         wheel(120)
-    assert len(chart.plot.buckets) == 8
+    assert len(chart.plot.buckets) == 10
     chart.plot.grab()  # Verify adaptive axis labels paint at both zoom limits.

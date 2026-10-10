@@ -76,12 +76,12 @@ class CountPlot(QWidget):
     def __init__(self):
         super().__init__()
         self.buckets = []
-        self.visible_count = 20
+        self.visible_count = 44
         self.minutes = 1
         self.plot_rect = QRectF()
         self.setMinimumHeight(200)
         self.setMouseTracking(True)
-        self.setAccessibleDescription("滚轮向下缩小，显示更多时间区间；向上放大。支持8至96个区间。")
+        self.setAccessibleDescription("滚轮向下缩小，显示更多时间区间；向上放大。支持10至125个区间。")
         self.setAccessibleName("强平记录数量双柱图，红色多头，绿色空头")
 
     def paintEvent(self, event):
@@ -106,9 +106,8 @@ class CountPlot(QWidget):
         if not self.buckets:
             return
         slot = plot.width() / len(self.buckets)
-        # Original group gap was 70% of a slot; reduce that gap by one third.
-        group_gap = slot * 0.70 * (2 / 3)
-        bar_width = max(0.5, (slot - group_gap) / 2)
+        # Two touching bars plus one bar-width gap between adjacent groups.
+        bar_width = slot / 3
         label_step = max(1, math.ceil(len(self.buckets) / max(1, int(plot.width() / 65))))
         for i, bucket in enumerate(self.buckets):
             center = plot.left() + (i + 0.5) * slot
@@ -129,7 +128,7 @@ class CountPlot(QWidget):
         if not delta:
             delta = (event.pixelDelta().y() or event.pixelDelta().x()) * 3
         if delta:
-            count = max(8, min(96, round(self.visible_count * 1.2 ** (-delta / 120))))
+            count = max(10, min(125, round(self.visible_count * 1.2 ** (-delta / 120))))
             if count != self.visible_count:
                 self.visible_count = count
                 self.setToolTip("")
@@ -166,7 +165,7 @@ class LiquidationChart(QFrame):
         controls = QHBoxLayout()
         title = QLabel("强平记录 · 模拟数据")
         title.setObjectName("muted")
-        title.setToolTip("在图内滚动鼠标滚轮：向下显示更多柱子，向上放大；显示8至96个时间区间")
+        title.setToolTip("在图内滚动鼠标滚轮：向下显示更多柱子，向上放大；显示10至125个时间区间")
         controls.addWidget(title)
         for text, color in (("■ 多头", LONG_COLOR), ("■ 空头", SHORT_COLOR)):
             label = QLabel(text)
