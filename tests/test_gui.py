@@ -350,7 +350,7 @@ def test_no_bounds_captures_current_price_without_immediate_speech(qtbot):
     for price in ("82650", "82700", "82650", "82600", "82500"):
         window.worker.ticker.emit(row.instrument, price, None)
     assert [p for _, p in window.speech.calls] == ["82700", "82600", "82500"]
-    assert window.speech.movements == [None, None, None]
+    assert window.speech.movements == ["up", "down", "down"]
     row.voice_button.click()
     row.voice_button.click()
     assert row.ladder.base == Decimal("82500")
@@ -375,7 +375,7 @@ def test_inside_reporting_with_directional_boundary_notices(qtbot):
     for price in ("159", "160", "150", "201", "210", "190", "180", "99", "90", "100"):
         worker.ticker.emit(row.instrument, price, None)
     assert [p for _, p in window.speech.calls] == ["160", "150", "201", "210", "180", "99", "90"]
-    assert window.speech.movements == [None, None, "high", "high", None, "low", "low"]
+    assert window.speech.movements == ["up", "down", "high", "high", "down", "low", "low"]
     assert [side for _, side in window.speech.triggered] == ["high", "high", "low", "low"]
     assert window.speech.cancelled.count(row.instrument) == 2
     assert "范围内按间隔" in row.voice_state.text()

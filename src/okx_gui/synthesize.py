@@ -13,7 +13,7 @@ import wave
 
 def split_contract_name(text):
     """Keep the Chinese price intact and spell the contract in English."""
-    match = re.match(r"([A-Za-z0-9]+)，(?=价格(?:突破|跌破)? )", text)
+    match = re.match(r"([A-Za-z0-9]+)，?(?=价格(?:突破|跌破|上涨到|下跌到)? )", text)
     if not match:
         return None, text
     return " ".join(match[1].upper()), text[match.end():]
@@ -21,11 +21,11 @@ def split_contract_name(text):
 
 def split_price_announcement(text):
     """Separate the Chinese notice without losing English contract pronunciation."""
-    prefix = "行情有变。"
-    if text.startswith(prefix):
-        letters, price_text = split_contract_name(text[len(prefix):])
-        if letters:
-            return prefix, letters, price_text
+    for prefix in ("行情有变。", "行情有变，"):
+        if text.startswith(prefix):
+            letters, price_text = split_contract_name(text[len(prefix):])
+            if letters:
+                return prefix, letters, price_text
     letters, price_text = split_contract_name(text)
     return "", letters, price_text
 

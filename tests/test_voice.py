@@ -411,3 +411,34 @@ def test_inside_steps_preserve_decimal_precision_with_one_bound():
 def test_inside_reporting_requires_interval_even_with_emergency():
     with pytest.raises(ValueError, match="区间内播报需要填写价格间隔"):
         PriceLadder("100", "200", "", allow_once=True, inside_enabled=True)
+
+
+@pytest.mark.parametrize('movement,action,price_text', [
+    ('up', '上涨到', '八 二 七 零 零 点 零 五'),
+    ('down', '下跌到', '八 二 六 零 零'),
+])
+def test_inside_direction_announcement_text(movement, action, price_text):
+    from collections import deque
+    from types import SimpleNamespace
+    from PySide6.QtTextToSpeech import QTextToSpeech
+    from okx_gui.voice import SpeechService
+
+    calls = []
+    service = SimpleNamespace(
+        availability_error=lambda: '', current=None, chinese=True,
+        pending=deque([('BTC-USDT-SWAP', '82700.05' if movement == 'up' else '82600', movement)]),
+        tts=SimpleNamespace(state=lambda: QTextToSpeech.State.Ready, say=calls.append),
+    )
+    SpeechService._next(service)
+    assert calls == [f'行情有变，BTC价格{action} {price_text}']
+
+
+def test_inside_direction_tracks_step_base_and_resets_after_reentry():
+    ladder = PriceLadder('82400', '82800', '100', inside_enabled=True)
+    ladder.validate_current('82600')
+    assert ladder.feed('82700') and ladder.movement == 'up'
+    assert not ladder.feed('82650') and ladder.movement is None
+    assert ladder.feed('82600') and ladder.movement == 'down'
+    assert ladder.feed('82801')
+    assert not ladder.feed('82750')  # Reentry establishes a fresh interval base.
+    assert ladder.feed('82650') and ladder.movement == 'down'

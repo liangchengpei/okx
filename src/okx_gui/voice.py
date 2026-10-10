@@ -61,6 +61,7 @@ class PriceLadder:
         self.once_fired = False
         self.level = None
         self.side = None
+        self.movement = None
 
     def validate_current(self, price):
         price = positive_decimal(str(price))
@@ -70,6 +71,7 @@ class PriceLadder:
             self.inside_level = price
 
     def feed(self, price):
+        self.movement = None
         price = positive_decimal(str(price))
         if self.current_based:
             if self.base is None:
@@ -80,6 +82,7 @@ class PriceLadder:
             if not steps:
                 return False
             self.side = "high" if distance > 0 else "low"
+            self.movement = "up" if distance > 0 else "down"
             self.level += steps * self.step if distance > 0 else -steps * self.step
             return True
         if self.lower <= price <= self.upper:
@@ -91,6 +94,7 @@ class PriceLadder:
                 distance = price - self.inside_level
                 steps = (abs(distance) / self.step).to_integral_value(rounding=ROUND_FLOOR)
                 if steps:
+                    self.movement = "up" if distance > 0 else "down"
                     self.inside_level += steps * self.step if distance > 0 else -steps * self.step
                     return True
             return False
@@ -221,7 +225,12 @@ class SpeechService(QObject):
         name = instrument.split("-", 1)[0]
         price = spoken_price(price, self.chinese)
         action = {"high": "突破", "low": "跌破"}.get(movement)
-        if action:
+        if movement in ("up", "down"):
+            change = "上涨到" if movement == "up" else "下跌到"
+            english_change = "rises to" if movement == "up" else "falls to"
+            text = (f"行情有变，{name}价格{change} {price}" if self.chinese
+                    else f"Market update. {name}, price {english_change} {price}")
+        elif action:
             english_action = "breaks above" if movement == "high" else "breaks below"
             text = (f"{name}，价格{action} {price}" if self.chinese
                     else f"{name}, price {english_action} {price}")

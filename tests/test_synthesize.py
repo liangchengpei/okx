@@ -136,13 +136,13 @@ def test_server_corrects_notice_tone_once_without_changing_prices(monkeypatch, t
     ))
     monkeypatch.setattr(synthesize, "english_name_audio", lambda *args: b"\x01\x00" * 100)
     monkeypatch.setattr(sys, "argv", ["synthesize", "--model", str(tmp_path / "fake.onnx"), "--server"])
-    texts = ["行情有变。BTC，价格 一", "行情有变。BTC，价格 二", "BTC，价格突破 三", "BTC，价格跌破 四", "情况紧急"]
+    texts = ["行情有变。BTC，价格 一", "行情有变。BTC，价格 二", "BTC，价格突破 三", "BTC，价格跌破 四", "行情有变，BTC价格上涨到 五", "行情有变，BTC价格下跌到 六", "情况紧急"]
     monkeypatch.setattr(sys, "stdin", io.StringIO("".join(
         json.dumps({"id": i, "text": text, "output": str(tmp_path / f"{i}.wav")}) + "\n"
         for i, text in enumerate(texts)
     )))
     synthesize.main()
-    assert calls == ["行情有[[pˈiɛ51n]]。", "价格 一", "价格 二", "价格突[[phˈo5↓]] 三", "价格跌[[phˈo5↓]] 四", "情况紧急"]
+    assert calls == ["行情有[[pˈiɛ51n]]。", "价格 一", "价格 二", "价格突[[phˈo5↓]] 三", "价格跌[[phˈo5↓]] 四", "价格上涨到 五", "价格下跌到 六", "情况紧急"]
     responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert responses == [{"ready": True}] + [{"id": i, "ok": True} for i in range(len(texts))]
 
@@ -153,3 +153,11 @@ def test_boundary_notice_keeps_english_contract_pronunciation(action):
     assert split_price_announcement(f"BTC，价格{action} 八 二 六 零 零") == (
         "", "B T C", f"价格{action} 八 二 六 零 零"
     )
+
+
+@pytest.mark.parametrize('action', ['上涨到', '下跌到'])
+def test_inside_direction_preserves_english_name_and_chinese_price(action):
+    from okx_gui.synthesize import split_price_announcement
+
+    assert split_price_announcement(f'行情有变，BTC价格{action} 八 二 六 零 零') == (
+        '行情有变，', 'B T C', f'价格{action} 八 二 六 零 零')
