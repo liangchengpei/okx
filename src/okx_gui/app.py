@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
         self.positions_empty.setAlignment(Qt.AlignCenter)
         self.positions_empty.setObjectName("muted")
         layout.addWidget(self.positions_empty, 1)
-        self.positions_status = QLabel("每 5 秒自动刷新")
+        self.positions_status = QLabel("每 1 秒自动刷新")
         self.positions_status.setTextFormat(Qt.PlainText)
         self.positions_status.setObjectName("muted")
         self.positions_status.setWordWrap(True)
@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         self.positions_empty.setText("暂无持仓")
         self._positions_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
         mode = "实盘" if flag == "0" else "模拟盘"
-        self.positions_status.setText(f"{mode} · {len(positions)} 项持仓 · 更新于 {self._positions_updated_at} · 每 5 秒刷新")
+        self.positions_status.setText(f"{mode} · {len(positions)} 项持仓 · 更新于 {self._positions_updated_at} · 每 1 秒刷新")
         self.positions_refresh_button.setEnabled(True)
 
     def positions_failed(self, message):

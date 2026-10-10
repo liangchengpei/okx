@@ -220,7 +220,7 @@ class PositionsWorker(QThread):
     updated = Signal(object, str)
     error = Signal(str)
 
-    def __init__(self, parent=None, *, credentials_path=CREDENTIALS_PATH, interval=5,
+    def __init__(self, parent=None, *, credentials_path=CREDENTIALS_PATH, interval=1,
                  fetcher=None):
         super().__init__(parent)
         self.credentials_path = credentials_path
