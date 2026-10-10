@@ -209,8 +209,11 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
     window.toggle_market()
     window.worker.ticker.emit(row.instrument, "83000", None)
     row.voice_button.click()
-    assert "当前价格 83000" in messages[-1]
-    assert row.ladder is None
+    assert row.ladder is not None
+    assert window.speech.calls == [(row.instrument, "83000")]
+    assert window.speech.movements == ["high"]
+    assert not row.low_input.isEnabled()
+    row.voice_button.click()
     assert row.low_input.isEnabled()
     window.worker.ticker.emit(row.instrument, "82600", None)
     row.voice_button.click()
@@ -416,3 +419,19 @@ def test_market_starts_by_default_and_can_be_stopped(qtbot):
     assert window.worker is not worker
     assert window.worker.start_count == 1
     window.close()
+
+
+def test_start_below_lower_bound_triggers_single_price_and_emergency(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows["BTC-USDT-SWAP"]
+    row.low_input.setText("82400")
+    row.emergency_buttons["low"].setChecked(True)
+    window.worker.ticker.emit(row.instrument, "82000", None)
+    row.voice_button.click()
+    assert row.ladder is not None
+    assert window.speech.calls == [(row.instrument, "82000")]
+    assert window.speech.movements == ["low"]
+    assert window.speech.triggered == [(row.instrument, "low")]
+    window.worker.ticker.emit(row.instrument, "81900", None)
+    assert len(window.speech.calls) == 1

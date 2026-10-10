@@ -36,13 +36,16 @@ def test_jump_between_sides_and_small_decimal_steps():
     assert not ladder.feed("0.10")
 
 
-def test_current_price_must_be_inside_range():
-    ladder = PriceLadder("82400", "82800", "100")
-    for price in ("82400", "82600", "82800"):
-        ladder.validate_current(price)
-    for price in ("82399", "82801"):
-        with pytest.raises(ValueError, match="不处于设置范围"):
-            ladder.validate_current(price)
+@pytest.mark.parametrize("price,side", [("82399", "low"), ("82801", "high")])
+@pytest.mark.parametrize("inside_enabled", [False, True])
+def test_starting_outside_range_is_allowed(price, side, inside_enabled):
+    ladder = PriceLadder("82400", "82800", "100", inside_enabled=inside_enabled)
+    ladder.validate_current(price)
+    assert ladder.feed(price)
+    assert ladder.side == side
+    assert not ladder.feed(price)
+    assert not ladder.feed("82600")
+    assert ladder.feed("82700") == inside_enabled
 
 
 @pytest.mark.parametrize("value", ["", "NaN", "Infinity", "-1", "0", "words"])
@@ -309,8 +312,7 @@ def test_upper_only_defaults_lower_to_zero():
     assert not ladder.feed("82800")
     assert ladder.feed("82801")
     assert ladder.feed("82900")
-    with pytest.raises(ValueError, match="不处于设置范围"):
-        ladder.validate_current("82801")
+    ladder.validate_current("82801")
 
 
 def test_lower_only_defaults_upper_to_infinity():
@@ -321,8 +323,7 @@ def test_lower_only_defaults_upper_to_infinity():
     assert not ladder.feed("82400")
     assert ladder.feed("82399")
     assert ladder.feed("82300")
-    with pytest.raises(ValueError, match="不处于设置范围"):
-        ladder.validate_current("82399")
+    ladder.validate_current("82399")
 
 
 def test_both_blank_are_unbounded_and_explicit_zero_is_valid():

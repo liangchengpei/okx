@@ -64,11 +64,9 @@ class PriceLadder:
 
     def validate_current(self, price):
         price = positive_decimal(str(price))
-        if not self.lower <= price <= self.upper:
-            raise ValueError(f"当前价格 {price} 不处于设置范围 [{self.lower}, {self.upper}] 内，请调整价格范围。")
         if self.current_based and self.base is None:
             self.base = self.level = price
-        elif self.inside_enabled and self.inside_level is None:
+        elif self.inside_enabled and self.inside_level is None and self.lower <= price <= self.upper:
             self.inside_level = price
 
     def feed(self, price):
