@@ -122,7 +122,7 @@ def main():
     if voice.config.espeak_voice == "cmn" and english_path.is_file():
         english_voice = PiperVoice.load(str(english_path))
         english_audio = NeuralEnglishNames(
-            english_voice, SynthesisConfig(length_scale=0.9)
+            english_voice, SynthesisConfig(length_scale=0.75)
         ).audio
 
     def synthesize(text, output):
