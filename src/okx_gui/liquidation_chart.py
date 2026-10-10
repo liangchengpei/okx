@@ -106,7 +106,9 @@ class CountPlot(QWidget):
         if not self.buckets:
             return
         slot = plot.width() / len(self.buckets)
-        bar_width = max(0.5, slot * 0.15)
+        # Original group gap was 70% of a slot; reduce that gap by one third.
+        group_gap = slot * 0.70 * (2 / 3)
+        bar_width = max(0.5, (slot - group_gap) / 2)
         label_step = max(1, math.ceil(len(self.buckets) / max(1, int(plot.width() / 65))))
         for i, bucket in enumerate(self.buckets):
             center = plot.left() + (i + 0.5) * slot
