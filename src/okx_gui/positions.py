@@ -58,7 +58,7 @@ def load_credentials(path=CREDENTIALS_PATH):
     def required(label, *aliases):
         value = next((values[key] for key in aliases if values.get(key)), "")
         if not value:
-            raise PositionsError(f"凭据文件缺少 {label}，请补充后点击刷新。")
+            raise PositionsError(f"凭据文件缺少 {label}，请补充后等待自动重试。")
         return value
 
     key = required("apiKey", "okxapikey", "apikey")

@@ -266,13 +266,7 @@ class MainWindow(QMainWindow):
         layout = self.positions_panel.layout()
         heading = layout.takeAt(0).widget()
         layout.takeAt(0)  # Replace the placeholder stretch with account data.
-        header = QHBoxLayout()
-        header.addWidget(heading)
-        header.addStretch()
-        self.positions_refresh_button = QPushButton("刷新持仓")
-        self.positions_refresh_button.clicked.connect(self.refresh_positions)
-        header.addWidget(self.positions_refresh_button)
-        layout.addLayout(header)
+        layout.addWidget(heading)
         self.positions_panel.setMinimumHeight(360)
         self.position_cards = []
         self.positions_scroll = QScrollArea()
@@ -292,11 +286,6 @@ class MainWindow(QMainWindow):
         self.positions_empty.setAlignment(Qt.AlignCenter)
         self.positions_empty.setObjectName("muted")
         layout.addWidget(self.positions_empty, 1)
-        self.positions_status = QLabel("每 1 秒自动刷新")
-        self.positions_status.setTextFormat(Qt.PlainText)
-        self.positions_status.setObjectName("muted")
-        self.positions_status.setWordWrap(True)
-        layout.addWidget(self.positions_status)
 
     def refresh_positions(self):
         if self.positions_worker and self.positions_worker.isRunning():
@@ -311,9 +300,6 @@ class MainWindow(QMainWindow):
         self.positions_worker.start()
 
     def positions_loading(self):
-        self.positions_refresh_button.setEnabled(False)
-        suffix = f" · 上次更新 {self._positions_updated_at}" if self._positions_updated_at else ""
-        self.positions_status.setText(f"正在读取持仓…{suffix}")
         if not self._positions_updated_at:
             self.positions_empty.setText("正在读取持仓…")
 
@@ -332,16 +318,14 @@ class MainWindow(QMainWindow):
         self.positions_empty.setVisible(not positions)
         self.positions_empty.setText("暂无持仓")
         self._positions_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
-        mode = "实盘" if flag == "0" else "模拟盘"
-        self.positions_status.setText(f"{mode} · {len(positions)} 项持仓 · 更新于 {self._positions_updated_at} · 每 1 秒刷新")
-        self.positions_refresh_button.setEnabled(True)
+        self.positions_panel.setToolTip("")
 
     def positions_failed(self, message):
         suffix = f"，显示上次数据（{self._positions_updated_at}）" if self._positions_updated_at else ""
-        self.positions_status.setText(f"持仓读取失败{suffix}：{message}")
+        self.positions_panel.setToolTip(f"持仓读取失败{suffix}：{message}")
         if not self.position_cards:
-            self.positions_empty.setText("暂无法确认持仓")
-        self.positions_refresh_button.setEnabled(True)
+            self.positions_empty.setText(f"暂无法确认持仓：{message}")
+
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -564,7 +548,7 @@ class MainWindow(QMainWindow):
         if self.positions_worker and self.positions_worker.isRunning():
             self.positions_worker.stop()
             if not self.positions_worker.wait(7000):
-                self.positions_status.setText("正在关闭持仓连接，请稍后关闭窗口")
+                self.positions_panel.setToolTip("正在关闭持仓连接，请稍后关闭窗口")
                 event.ignore()
                 return
         for row in self.rows.values():

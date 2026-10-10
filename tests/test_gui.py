@@ -474,25 +474,22 @@ def test_positions_auto_load_render_refresh_and_stale_error(qtbot):
     window.show()
     worker = window.positions_worker
     assert worker.running
-    assert not window.positions_refresh_button.isEnabled()
+    assert not hasattr(window, "positions_refresh_button")
+    assert not hasattr(window, "positions_status")
     worker.updated.emit([Position('BTC-USDT-SWAP', '多', '2 张', '82600.05',
                                   '82610.15', '0.20 USDT', '3×', '全仓')], '0')
     assert len(window.position_cards) == 1
     assert window.position_cards[0].values['average'].text() == '82,600.05'
     assert window.positions_scroll.isVisible()
     assert not window.positions_empty.isVisible()
-    assert '实盘' in window.positions_status.text()
-    window.positions_refresh_button.click()
-    assert worker.refreshes == 1
     worker.error.emit('网络异常')
     assert len(window.position_cards) == 1
-    assert '上次数据' in window.positions_status.text()
-    assert window.positions_refresh_button.isEnabled()
+    assert '上次数据' in window.positions_panel.toolTip()
     worker.updated.emit([], '1')
     assert len(window.position_cards) == 0
     assert window.positions_empty.isVisible()
     assert window.positions_empty.text() == '暂无持仓'
-    assert '模拟盘' in window.positions_status.text()
+    assert window.positions_panel.toolTip() == ''
     window.close()
     assert not worker.running
 
@@ -502,9 +499,8 @@ def test_positions_first_failure_does_not_claim_no_positions(qtbot):
                         auto_start=False, positions_worker_factory=FakePositionsWorker)
     qtbot.addWidget(window)
     window.positions_worker.error.emit('缺少 passphrase')
-    assert window.positions_empty.text() == '暂无法确认持仓'
-    assert '缺少 passphrase' in window.positions_status.text()
-    assert window.positions_refresh_button.isEnabled()
+    assert '暂无法确认持仓' in window.positions_empty.text()
+    assert '缺少 passphrase' in window.positions_empty.text()
 
 
 def test_position_card_reference_format(qtbot):
