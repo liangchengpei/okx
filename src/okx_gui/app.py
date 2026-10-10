@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         self.monitor_panel = QWidget()
         self.monitor_panel.setMinimumHeight(150)
         monitor_layout = QVBoxLayout(self.monitor_panel)
-        monitor_layout.setContentsMargins(0, 0, 0, 12)
+        monitor_layout.setContentsMargins(0, 0, 0, 10)
         monitor_layout.setSpacing(12)
         self.main_splitter.addWidget(self.monitor_panel)
         table = QFrame()
@@ -249,7 +249,7 @@ class MainWindow(QMainWindow):
         monitor_layout.addLayout(controls)
         self.trading_panel = QWidget()
         trading_areas = QHBoxLayout(self.trading_panel)
-        trading_areas.setContentsMargins(0, 4, 0, 0)
+        trading_areas.setContentsMargins(0, 6, 0, 0)
         trading_areas.setSpacing(16)
         for attribute, object_name, title in (
             ("positions_panel", "positionsPanel", "持仓信息"),
