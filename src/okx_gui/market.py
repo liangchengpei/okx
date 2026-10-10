@@ -12,16 +12,22 @@ PUBLIC_URL = "wss://ws.okx.com/ws/v5/public"
 
 
 def parse_ticker(data):
-    """Preserve exchange price precision and calculate rolling 24h change."""
+    """Preserve price precision and calculate change since UTC midnight."""
     try:
         last = Decimal(data["last"])
-        opened = Decimal(data["open24h"])
-        if not last.is_finite() or not opened.is_finite() or last <= 0 or opened < 0:
+        instrument = data["instId"]
+        if not last.is_finite() or last <= 0:
             return None
-        change = (last / opened - 1) * 100 if opened else None
-        return data["instId"], format(last, "f"), change
-    except (KeyError, TypeError, InvalidOperation, ZeroDivisionError):
+    except (KeyError, TypeError, InvalidOperation):
         return None
+    change = None
+    try:
+        opened = Decimal(data["sodUtc0"])
+        if opened.is_finite() and opened > 0:
+            change = (last / opened - 1) * 100
+    except (KeyError, TypeError, InvalidOperation, ZeroDivisionError):
+        pass  # A missing UTC baseline must not suppress live prices or voice alerts.
+    return instrument, format(last, "f"), change
 
 
 class MarketWorker(QThread):

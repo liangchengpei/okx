@@ -109,6 +109,7 @@ class ContractRow(QFrame):
         self.change = QLabel("--")
         self.change.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.change.setObjectName("muted")
+        self.change.setToolTip("UTC 零点起涨跌幅（北京时间每日 08:00 起）")
         self.remove_button = QPushButton("×")
         self.remove_button.setObjectName("remove")
         self.remove_button.setFixedSize(28, 28)
@@ -183,7 +184,7 @@ class ContractRow(QFrame):
         self.change.setText("--" if change is None else f"{change:+.2f}%")
         color = "#7b818a" if change is None else ("#15966b" if change >= 0 else "#d34b4b")
         self.change.setStyleSheet(f"color: {color}; font-size: 12px;")
-        self.setToolTip("实时行情 · 最新成交价 / 24h 涨跌幅")
+        self.setToolTip("实时行情 · 最新成交价 / UTC 零点起涨跌幅")
 
 
 class MainWindow(QMainWindow):
