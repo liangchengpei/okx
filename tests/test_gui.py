@@ -539,3 +539,24 @@ def test_position_card_missing_values_and_small_prices(qtbot):
     assert card.values['average'].text() == '0.00001234'
     assert number('NaN') == '--'
     assert number('-0.00001', decimals=2) == '0'
+
+
+def test_monitor_splitter_resizes_both_lower_panels(qtbot):
+    from PySide6.QtCore import Qt
+
+    window = make_window(qtbot)
+    splitter = window.main_splitter
+    assert splitter.orientation() == Qt.Vertical
+    assert splitter.widget(0) is window.monitor_panel
+    assert splitter.widget(1) is window.trading_panel
+    before = splitter.sizes()
+    lower_height = window.positions_panel.height()
+    splitter.moveSplitter(before[0] - 100, 1)
+    qtbot.waitUntil(lambda: splitter.sizes()[0] < before[0])
+    assert splitter.sizes()[1] > before[1]
+    assert window.positions_panel.height() > lower_height
+    assert window.positions_panel.height() == window.order_panel.height()
+    splitter.moveSplitter(10000, 1)
+    assert splitter.sizes()[1] >= 210
+    splitter.moveSplitter(0, 1)
+    assert splitter.sizes()[0] >= 150

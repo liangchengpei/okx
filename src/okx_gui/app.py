@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
 from okx_gui.market import MarketWorker
@@ -38,6 +38,7 @@ QLabel#error { color: #c34747; font-size: 12px; }
 QFrame#row { border-bottom: 1px solid #ededee; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
 QScrollArea { border: 0; background: transparent; }
+QSplitter#mainSplitter::handle:vertical { background: #e0e1e3; border: 0; }
 QScrollBar:vertical { background: #f6f6f6; width: 6px; margin: 0; }
 QScrollBar::handle:vertical { background: #d8dadd; border-radius: 3px; min-height: 24px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
@@ -186,6 +187,17 @@ class MainWindow(QMainWindow):
         self.error_label.setWordWrap(True)
         self.error_label.hide()
         layout.addWidget(self.error_label)
+        self.main_splitter = QSplitter(Qt.Vertical)
+        self.main_splitter.setObjectName("mainSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(1)
+        layout.addWidget(self.main_splitter, 1)
+        self.monitor_panel = QWidget()
+        self.monitor_panel.setMinimumHeight(150)
+        monitor_layout = QVBoxLayout(self.monitor_panel)
+        monitor_layout.setContentsMargins(0, 0, 0, 12)
+        monitor_layout.setSpacing(12)
+        self.main_splitter.addWidget(self.monitor_panel)
         table = QFrame()
         table.setObjectName("list")
         table_layout = QVBoxLayout(table)
@@ -206,7 +218,7 @@ class MainWindow(QMainWindow):
         self.row_layout.addStretch()
         self.scroll.setWidget(content)
         table_layout.addWidget(self.scroll)
-        layout.addWidget(table, 1)
+        monitor_layout.addWidget(table, 1)
         self.empty_label = QLabel("暂无合约，请在上方添加")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setObjectName("muted")
@@ -234,8 +246,10 @@ class MainWindow(QMainWindow):
         self.start_button.setObjectName("start")
         self.start_button.clicked.connect(self.toggle_market)
         controls.addWidget(self.start_button)
-        layout.addLayout(controls)
-        trading_areas = QHBoxLayout()
+        monitor_layout.addLayout(controls)
+        self.trading_panel = QWidget()
+        trading_areas = QHBoxLayout(self.trading_panel)
+        trading_areas.setContentsMargins(0, 4, 0, 0)
         trading_areas.setSpacing(16)
         for attribute, object_name, title in (
             ("positions_panel", "positionsPanel", "持仓信息"),
@@ -253,7 +267,12 @@ class MainWindow(QMainWindow):
             panel_layout.addStretch()
             setattr(self, attribute, panel)
             trading_areas.addWidget(panel, 1)
-        layout.addLayout(trading_areas)
+        self.main_splitter.addWidget(self.trading_panel)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([360, 450])
+        handle = self.main_splitter.handle(1)
+        handle.setCursor(Qt.SplitVCursor)
         self.setup_positions_panel()
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
@@ -267,7 +286,6 @@ class MainWindow(QMainWindow):
         heading = layout.takeAt(0).widget()
         layout.takeAt(0)  # Replace the placeholder stretch with account data.
         layout.addWidget(heading)
-        self.positions_panel.setMinimumHeight(360)
         self.position_cards = []
         self.positions_scroll = QScrollArea()
         self.positions_scroll.setWidgetResizable(True)
