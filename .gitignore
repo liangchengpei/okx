@@ -12,6 +12,8 @@ __pycache__/
 .vscode/
 
 # API credentials
+credentials.env
+credentials.*.env
 .env
 .env.*
 !.env.example

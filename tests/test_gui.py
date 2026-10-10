@@ -80,7 +80,7 @@ class FakeSpeech(QObject):
 
 
 def make_window(qtbot):
-    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False, auto_start_positions=False)
     qtbot.addWidget(window)
     window.show()
     return window
@@ -150,7 +150,7 @@ def test_entry_point_runs_event_loop():
     result = subprocess.run(
         [sys.executable, "-c", "from PySide6.QtWidgets import QApplication; "
          "from PySide6.QtCore import QTimer; import okx_gui.app as gui; "
-         "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False); "
+         "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False, auto_start_positions=False); "
          "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(gui.main())"],
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
         capture_output=True, text=True, timeout=10,
@@ -401,7 +401,7 @@ def test_inside_reporting_without_interval_shows_dialog(qtbot, monkeypatch):
 
 
 def test_market_starts_by_default_and_can_be_stopped(qtbot):
-    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech)
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start_positions=False)
     qtbot.addWidget(window)
     window.show()
     worker = window.worker
@@ -435,3 +435,111 @@ def test_start_below_lower_bound_triggers_single_price_and_emergency(qtbot):
     assert window.speech.triggered == [(row.instrument, "low")]
     window.worker.ticker.emit(row.instrument, "81900", None)
     assert len(window.speech.calls) == 1
+
+
+class FakePositionsWorker(QObject):
+    loading = Signal()
+    updated = Signal(object, str)
+    error = Signal(str)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.running = False
+        self.refreshes = 0
+
+    def start(self):
+        self.running = True
+        self.loading.emit()
+
+    def refresh(self):
+        self.refreshes += 1
+        self.loading.emit()
+
+    def isRunning(self):
+        return self.running
+
+    def stop(self):
+        self.running = False
+
+    def wait(self, timeout):
+        return True
+
+
+def test_positions_auto_load_render_refresh_and_stale_error(qtbot):
+    from okx_gui.positions import Position
+
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech,
+                        auto_start=False, positions_worker_factory=FakePositionsWorker)
+    qtbot.addWidget(window)
+    window.show()
+    worker = window.positions_worker
+    assert worker.running
+    assert not window.positions_refresh_button.isEnabled()
+    worker.updated.emit([Position('BTC-USDT-SWAP', '多', '2 张', '82600.05',
+                                  '82610.15', '0.20 USDT', '3×', '全仓')], '0')
+    assert len(window.position_cards) == 1
+    assert window.position_cards[0].values['average'].text() == '82,600.05'
+    assert window.positions_scroll.isVisible()
+    assert not window.positions_empty.isVisible()
+    assert '实盘' in window.positions_status.text()
+    window.positions_refresh_button.click()
+    assert worker.refreshes == 1
+    worker.error.emit('网络异常')
+    assert len(window.position_cards) == 1
+    assert '上次数据' in window.positions_status.text()
+    assert window.positions_refresh_button.isEnabled()
+    worker.updated.emit([], '1')
+    assert len(window.position_cards) == 0
+    assert window.positions_empty.isVisible()
+    assert window.positions_empty.text() == '暂无持仓'
+    assert '模拟盘' in window.positions_status.text()
+    window.close()
+    assert not worker.running
+
+
+def test_positions_first_failure_does_not_claim_no_positions(qtbot):
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech,
+                        auto_start=False, positions_worker_factory=FakePositionsWorker)
+    qtbot.addWidget(window)
+    window.positions_worker.error.emit('缺少 passphrase')
+    assert window.positions_empty.text() == '暂无法确认持仓'
+    assert '缺少 passphrase' in window.positions_status.text()
+    assert window.positions_refresh_button.isEnabled()
+
+
+def test_position_card_reference_format(qtbot):
+    from okx_gui.position_widgets import PositionCard
+    from okx_gui.positions import parse_positions
+
+    position = parse_positions([dict(
+        instId='BTC-USDT-SWAP', instType='SWAP', pos='-400', posSide='net',
+        avgPx='82577', markPx='82756', upl='-720.76', ccy='USDT', lever='100',
+        mgnMode='cross', imr='3310.24', uplRatio='-0.2182', mgnRatio='4.6758',
+        liqPx='84486.6',
+    )], {'BTC-USDT-SWAP': dict(ctVal='0.01', ctValCcy='BTC', tickSz='0.1')})[0]
+    card = PositionCard(position)
+    qtbot.addWidget(card)
+    assert card.title_label.text() == 'BTCUSDT 永续'
+    assert card.side_label.text() == '卖'
+    assert card.profit_label.text() == '-720.76 (-21.82%)'
+    assert '#c5476b' in card.profit_label.styleSheet()
+    assert card.values['quantity'].text() == '-4'
+    assert card.values['margin'].text() == '3,310.24'
+    assert card.values['maintenance'].text() == '467.58%'
+    assert card.values['average'].text() == '82,577'
+    assert card.values['liquidation'].text() == '84,486.6'
+
+
+def test_position_card_missing_values_and_small_prices(qtbot):
+    from okx_gui.position_widgets import PositionCard, number
+    from okx_gui.positions import Position
+
+    card = PositionCard(Position('DOGE-USDT-SWAP', '多', '1 张', '0.00001234',
+                                 '--', '0.01 USDT', '5×', '逐仓', price_decimals=8))
+    qtbot.addWidget(card)
+    assert card.side_label.text() == '买'
+    assert '#36a269' in card.profit_label.styleSheet()
+    assert card.values['liquidation'].text() == '--'
+    assert card.values['average'].text() == '0.00001234'
+    assert number('NaN') == '--'
+    assert number('-0.00001', decimals=2) == '0'

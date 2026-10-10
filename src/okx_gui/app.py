@@ -1,6 +1,8 @@
 """Contract monitor GUI."""
 import re
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -9,6 +11,8 @@ from PySide6.QtWidgets import (
 )
 
 from okx_gui.market import MarketWorker
+from okx_gui.positions import PositionsWorker
+from okx_gui.position_widgets import PositionCard
 from okx_gui.voice import PriceLadder, SpeechService, positive_decimal
 
 STYLE = """
@@ -131,15 +135,19 @@ class ContractRow(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService, *, auto_start=True):
+    def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService, *, auto_start=True,
+                 positions_worker_factory=PositionsWorker, auto_start_positions=True):
         super().__init__()
         self.worker_factory = worker_factory
         self.worker = None
+        self.positions_worker_factory = positions_worker_factory
+        self.positions_worker = None
+        self._positions_updated_at = None
         self.rows = {}
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(1380, 800)
+        self.resize(1380, 960)
         self.setMinimumSize(1270, 650)
         self.setStyleSheet(STYLE)
         root = QWidget()
@@ -246,10 +254,94 @@ class MainWindow(QMainWindow):
             setattr(self, attribute, panel)
             trading_areas.addWidget(panel, 1)
         layout.addLayout(trading_areas)
+        self.setup_positions_panel()
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
         if auto_start:
             self.toggle_market()
+        if auto_start_positions:
+            self.refresh_positions()
+
+    def setup_positions_panel(self):
+        layout = self.positions_panel.layout()
+        heading = layout.takeAt(0).widget()
+        layout.takeAt(0)  # Replace the placeholder stretch with account data.
+        header = QHBoxLayout()
+        header.addWidget(heading)
+        header.addStretch()
+        self.positions_refresh_button = QPushButton("刷新持仓")
+        self.positions_refresh_button.clicked.connect(self.refresh_positions)
+        header.addWidget(self.positions_refresh_button)
+        layout.addLayout(header)
+        self.positions_panel.setMinimumHeight(360)
+        self.position_cards = []
+        self.positions_scroll = QScrollArea()
+        self.positions_scroll.setWidgetResizable(True)
+        self.positions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.positions_scroll.setStyleSheet("QScrollArea { border: 0; background: #fcfcfc; }")
+        self.positions_content = QWidget()
+        self.positions_content.setStyleSheet("background: #fcfcfc;")
+        self.positions_cards_layout = QVBoxLayout(self.positions_content)
+        self.positions_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.positions_cards_layout.setSpacing(0)
+        self.positions_cards_layout.addStretch()
+        self.positions_scroll.setWidget(self.positions_content)
+        self.positions_scroll.hide()
+        layout.addWidget(self.positions_scroll, 1)
+        self.positions_empty = QLabel("持仓尚未读取")
+        self.positions_empty.setAlignment(Qt.AlignCenter)
+        self.positions_empty.setObjectName("muted")
+        layout.addWidget(self.positions_empty, 1)
+        self.positions_status = QLabel("每 5 秒自动刷新")
+        self.positions_status.setTextFormat(Qt.PlainText)
+        self.positions_status.setObjectName("muted")
+        self.positions_status.setWordWrap(True)
+        layout.addWidget(self.positions_status)
+
+    def refresh_positions(self):
+        if self.positions_worker and self.positions_worker.isRunning():
+            self.positions_worker.refresh()
+            return
+        if self.positions_worker:
+            self.positions_worker.deleteLater()
+        self.positions_worker = self.positions_worker_factory(self)
+        self.positions_worker.loading.connect(self.positions_loading)
+        self.positions_worker.updated.connect(self.update_positions)
+        self.positions_worker.error.connect(self.positions_failed)
+        self.positions_worker.start()
+
+    def positions_loading(self):
+        self.positions_refresh_button.setEnabled(False)
+        suffix = f" · 上次更新 {self._positions_updated_at}" if self._positions_updated_at else ""
+        self.positions_status.setText(f"正在读取持仓…{suffix}")
+        if not self._positions_updated_at:
+            self.positions_empty.setText("正在读取持仓…")
+
+    def update_positions(self, positions, flag):
+        scroll_position = self.positions_scroll.verticalScrollBar().value()
+        for card in self.position_cards:
+            self.positions_cards_layout.removeWidget(card)
+            card.deleteLater()
+        self.position_cards = []
+        for position in positions:
+            card = PositionCard(position)
+            self.positions_cards_layout.insertWidget(len(self.position_cards), card)
+            self.position_cards.append(card)
+        self.positions_scroll.setVisible(bool(positions))
+        self.positions_scroll.verticalScrollBar().setValue(scroll_position)
+        self.positions_empty.setVisible(not positions)
+        self.positions_empty.setText("暂无持仓")
+        self._positions_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
+        mode = "实盘" if flag == "0" else "模拟盘"
+        self.positions_status.setText(f"{mode} · {len(positions)} 项持仓 · 更新于 {self._positions_updated_at} · 每 5 秒刷新")
+        self.positions_refresh_button.setEnabled(True)
+
+    def positions_failed(self, message):
+        suffix = f"，显示上次数据（{self._positions_updated_at}）" if self._positions_updated_at else ""
+        self.positions_status.setText(f"持仓读取失败{suffix}：{message}")
+        if not self.position_cards:
+            self.positions_empty.setText("暂无法确认持仓")
+        self.positions_refresh_button.setEnabled(True)
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -469,6 +561,12 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if self.positions_worker and self.positions_worker.isRunning():
+            self.positions_worker.stop()
+            if not self.positions_worker.wait(7000):
+                self.positions_status.setText("正在关闭持仓连接，请稍后关闭窗口")
+                event.ignore()
+                return
         for row in self.rows.values():
             for button in row.emergency_buttons.values():
                 button.setChecked(False)
