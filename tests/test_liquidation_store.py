@@ -71,3 +71,27 @@ def test_thirty_day_retention_keeps_older_history_across_restart_and_updates(tmp
     assert retained in restored.records
     assert boundary not in restored.records
     assert retained in store.load('BTC', 'simulation', now + 1)
+
+
+def test_platforms_with_same_event_id_are_saved_separately(tmp_path):
+    store = LiquidationStore(tmp_path / 'history.sqlite3')
+    records = [LiquidationRecord(1000, 'long', 'same-id', 'okx'),
+               LiquidationRecord(1000, 'short', 'same-id', 'binance')]
+    store.save('BTC', 'simulation', records, 1000)
+    assert set(store.load('BTC', 'simulation', 1000)) == set(records)
+
+
+def test_legacy_database_migrates_without_losing_records(tmp_path):
+    path = tmp_path / 'legacy.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE streams (instrument TEXT, source TEXT, PRIMARY KEY(instrument,source))')
+        db.execute('INSERT INTO streams VALUES (?,?)', ('BTC', 'simulation'))
+        db.execute('''CREATE TABLE liquidation_records (instrument TEXT, source TEXT, event_id TEXT,
+                   timestamp REAL, side TEXT, PRIMARY KEY(instrument,source,event_id))''')
+        db.execute('INSERT INTO liquidation_records VALUES (?,?,?,?,?)', ('BTC','simulation','old',1000,'long'))
+        db.execute('CREATE INDEX liquidation_time ON liquidation_records(instrument,source,timestamp)')
+    store = LiquidationStore(path)
+    assert store.load('BTC', 'simulation', 1000) == [LiquidationRecord(1000, 'long', 'old', 'okx')]
+    record = LiquidationRecord(1000, 'short', 'old', 'binance')
+    store.save('BTC', 'simulation', [record], 1000)
+    assert len(LiquidationStore(path).load('BTC', 'simulation', 1000)) == 2

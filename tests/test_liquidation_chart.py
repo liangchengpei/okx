@@ -96,3 +96,16 @@ def test_wheel_zoom_shows_more_buckets_and_preserves_period_and_history(qtbot):
         wheel(120)
     assert len(chart.plot.buckets) == 10
     chart.plot.grab()  # Verify adaptive axis labels paint at both zoom limits.
+
+
+@pytest.mark.parametrize('minutes', [1, 5, 15])
+def test_stacked_counts_separate_platforms_and_sum_totals(minutes):
+    now = 90000
+    records = [LiquidationRecord(now, 'long', exchange='binance'),
+               LiquidationRecord(now, 'long', exchange='okx'),
+               LiquidationRecord(now, 'long', exchange='okx'),
+               LiquidationRecord(now, 'short', exchange='binance'),
+               LiquidationRecord(now, 'short', exchange='okx')]
+    bucket = aggregate_records(records, minutes, now)[-1]
+    assert (bucket.binance_long, bucket.okx_long, bucket.long_count) == (1, 2, 3)
+    assert (bucket.binance_short, bucket.okx_short, bucket.short_count) == (1, 1, 2)

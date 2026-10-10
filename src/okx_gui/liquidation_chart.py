@@ -22,6 +22,16 @@ class CountBucket:
     start: int
     long_count: int
     short_count: int
+    binance_long: int = 0
+    binance_short: int = 0
+
+    @property
+    def okx_long(self):
+        return self.long_count - self.binance_long
+
+    @property
+    def okx_short(self):
+        return self.short_count - self.binance_short
 
 
 def aggregate_records(records, minutes, now, count=20):
@@ -31,14 +41,19 @@ def aggregate_records(records, minutes, now, count=20):
     seconds = minutes * 60
     latest = math.floor(now / seconds) * seconds
     first = latest - (count - 1) * seconds
-    totals = [[0, 0] for _ in range(count)]
+    totals = [[0, 0, 0, 0] for _ in range(count)]
     for record in records:
         if not first <= record.timestamp <= now:
             continue
         index = math.floor((record.timestamp - first) / seconds)
         if record.side not in ("long", "short"):
             raise ValueError("强平方向必须为 long 或 short")
-        totals[index][0 if record.side == "long" else 1] += 1
+        if record.exchange not in ("okx", "binance"):
+            raise ValueError("平台必须为 okx 或 binance")
+        side = 0 if record.side == "long" else 1
+        totals[index][side] += 1
+        if record.exchange == "binance":
+            totals[index][side + 2] += 1
     return [CountBucket(first + i * seconds, *values) for i, values in enumerate(totals)]
 
 
@@ -57,7 +72,8 @@ class SimulatedLiquidations:
             start = now - (minute + 1) * 60
             for _ in range(self.random.randint(0, 18)):
                 self.records.append(LiquidationRecord(
-                    start + self.random.random() * 60, self.random.choice(("long", "short"))
+                    start + self.random.random() * 60, self.random.choice(("long", "short")),
+                    exchange=self.random.choice(("binance", "okx"))
                 ))
 
         self.store.save(instrument, "simulation", self.records, now)
@@ -65,7 +81,8 @@ class SimulatedLiquidations:
     def advance(self, now):
         new_records = []
         for _ in range(self.random.randint(0, 3)):
-            new_records.append(LiquidationRecord(now, self.random.choice(("long", "short"))))
+            new_records.append(LiquidationRecord(now, self.random.choice(("long", "short")),
+                                                  exchange=self.random.choice(("binance", "okx"))))
         self.store.save(self.instrument, "simulation", new_records, now)
         self.records = [record for record in self.records + new_records if record.timestamp >= now - HISTORY_SECONDS]
 
@@ -111,10 +128,15 @@ class CountPlot(QWidget):
         label_step = max(1, math.ceil(len(self.buckets) / max(1, int(plot.width() / 65))))
         for i, bucket in enumerate(self.buckets):
             center = plot.left() + (i + 0.5) * slot
-            for offset, value, color in ((-bar_width, bucket.long_count, LONG_COLOR),
-                                         (0, bucket.short_count, SHORT_COLOR)):
-                height = value / maximum * plot.height()
-                painter.fillRect(QRectF(center + offset, plot.bottom() - height, bar_width, height), QColor(color))
+            for offset, lower, upper, color in (
+                (-bar_width, bucket.binance_long, bucket.okx_long, LONG_COLOR),
+                (0, bucket.binance_short, bucket.okx_short, SHORT_COLOR),
+            ):
+                bottom = plot.bottom()
+                for value, fill in ((lower, QColor(color)), (upper, QColor(color).lighter(155))):
+                    height = value / maximum * plot.height()
+                    painter.fillRect(QRectF(center + offset, bottom - height, bar_width, height), fill)
+                    bottom -= height
             is_last = i == len(self.buckets) - 1
             if is_last or (i % label_step == 0 and len(self.buckets) - 1 - i >= label_step):
                 label = datetime.fromtimestamp(bucket.start, DISPLAY_ZONE).strftime("%H:%M")
@@ -145,7 +167,7 @@ class CountPlot(QWidget):
             bucket = self.buckets[index]
             start = datetime.fromtimestamp(bucket.start, DISPLAY_ZONE).strftime("%m-%d %H:%M")
             end = datetime.fromtimestamp(bucket.start + self.minutes * 60, DISPLAY_ZONE).strftime("%H:%M")
-            self.setToolTip(f"{start}–{end}（北京时间）\n多头强平：{bucket.long_count} 条\n空头强平：{bucket.short_count} 条"
+            self.setToolTip(f"{start}–{end}（北京时间）\n币安（下段）：多头 {bucket.binance_long} 条 · 空头 {bucket.binance_short} 条\nOKX（上段）：多头 {bucket.okx_long} 条 · 空头 {bucket.okx_short} 条\n合计：多头 {bucket.long_count} 条 · 空头 {bucket.short_count} 条"
                             + ("\n当前区间尚未结束" if index == len(self.buckets) - 1 else ""))
         else:
             self.setToolTip("")
@@ -179,6 +201,9 @@ class LiquidationChart(QFrame):
         self.interval.setToolTip("切换周期使用同一组模拟记录重新聚合；图内滚轮可横向缩放")
         controls.addWidget(self.interval)
         layout.addLayout(controls)
+        platform_legend = QLabel("下段深色：币安　上段浅色：OKX")
+        platform_legend.setObjectName("muted")
+        layout.addWidget(platform_legend)
         self.plot = CountPlot()
         layout.addWidget(self.plot, 1)
         self.interval.currentIndexChanged.connect(self.refresh)
