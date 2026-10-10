@@ -56,3 +56,43 @@ def test_chart_switches_period_without_regenerating_simulation(qtbot):
     chart.simulate()
     assert chart.plot.minutes == 15
     assert chart.plot.grab().width() > 0
+
+
+def test_wheel_zoom_shows_more_buckets_and_preserves_period_and_history(qtbot):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    chart = LiquidationChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    chart.timer.stop()
+    chart.resize(600, 300)
+    chart.show()
+    original = list(chart.source.records)
+
+    def wheel(delta):
+        position = QPointF(chart.plot.rect().center())
+        event = QWheelEvent(position, position, QPoint(), QPoint(0, delta),
+                            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        QApplication.sendEvent(chart.plot, event)
+        assert event.isAccepted()
+
+    wheel(-120)
+    assert len(chart.plot.buckets) > 20
+    assert chart.plot.minutes == 1
+    assert chart.source.records == original
+    latest = chart.plot.buckets[-1].start
+    for _ in range(20):
+        wheel(-120)
+    assert len(chart.plot.buckets) == 96
+    assert chart.plot.buckets[-1].start == latest
+    chart.interval.setCurrentIndex(2)
+    assert len(chart.plot.buckets) == 96
+    assert chart.plot.minutes == 15
+    assert chart.source.records == original
+    chart.simulate()
+    assert len(chart.plot.buckets) == 96
+    for _ in range(25):
+        wheel(120)
+    assert len(chart.plot.buckets) == 8
+    chart.plot.grab()  # Verify adaptive axis labels paint at both zoom limits.

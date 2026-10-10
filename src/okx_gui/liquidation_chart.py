@@ -5,13 +5,14 @@ import math
 import random
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import Qt, QRectF, QTimer
+from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 DISPLAY_ZONE = ZoneInfo("Asia/Shanghai")
 LONG_COLOR = "#d94b55"
 SHORT_COLOR = "#15966b"
+HISTORY_MINUTES = 24 * 60
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class SimulatedLiquidations:
     def __init__(self, instrument, now):
         self.random = random.Random(instrument)
         self.records = []
-        for minute in range(300):
+        for minute in range(HISTORY_MINUTES):
             start = now - (minute + 1) * 60
             for _ in range(self.random.randint(0, 18)):
                 self.records.append(LiquidationRecord(
@@ -61,17 +62,21 @@ class SimulatedLiquidations:
     def advance(self, now):
         for _ in range(self.random.randint(0, 3)):
             self.records.append(LiquidationRecord(now, self.random.choice(("long", "short"))))
-        self.records = [record for record in self.records if record.timestamp >= now - 300 * 60]
+        self.records = [record for record in self.records if record.timestamp >= now - HISTORY_MINUTES * 60]
 
 
 class CountPlot(QWidget):
+    visible_count_changed = Signal(int)
+
     def __init__(self):
         super().__init__()
         self.buckets = []
+        self.visible_count = 20
         self.minutes = 1
         self.plot_rect = QRectF()
         self.setMinimumHeight(200)
         self.setMouseTracking(True)
+        self.setAccessibleDescription("滚轮向下缩小，显示更多时间区间；向上放大。支持8至96个区间。")
         self.setAccessibleName("强平记录数量双柱图，红色多头，绿色空头")
 
     def paintEvent(self, event):
@@ -97,18 +102,34 @@ class CountPlot(QWidget):
             return
         slot = plot.width() / len(self.buckets)
         bar_width = max(0.5, slot * 0.15)
+        label_step = max(1, math.ceil(len(self.buckets) / max(1, int(plot.width() / 65))))
         for i, bucket in enumerate(self.buckets):
             center = plot.left() + (i + 0.5) * slot
             for offset, value, color in ((-bar_width, bucket.long_count, LONG_COLOR),
                                          (0, bucket.short_count, SHORT_COLOR)):
                 height = value / maximum * plot.height()
                 painter.fillRect(QRectF(center + offset, plot.bottom() - height, bar_width, height), QColor(color))
-            if i % 4 == 0 or i == len(self.buckets) - 1:
+            is_last = i == len(self.buckets) - 1
+            if is_last or (i % label_step == 0 and len(self.buckets) - 1 - i >= label_step):
                 label = datetime.fromtimestamp(bucket.start, DISPLAY_ZONE).strftime("%H:%M")
                 painter.setPen(QColor("#7b818a"))
                 painter.drawText(QRectF(center - 24, plot.bottom() + 5, 48, 18), Qt.AlignCenter, label)
         painter.drawText(QRectF(plot.left(), plot.bottom() + 24, plot.width(), 16),
                          Qt.AlignRight, "时间（北京时间）")
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if not delta:
+            delta = (event.pixelDelta().y() or event.pixelDelta().x()) * 3
+        if delta:
+            count = max(8, min(96, round(self.visible_count * 1.2 ** (-delta / 120))))
+            if count != self.visible_count:
+                self.visible_count = count
+                self.setToolTip("")
+                self.visible_count_changed.emit(count)
+            event.accept()  # Zooming must not scroll the surrounding contract list.
+        else:
+            event.ignore()
 
     def mouseMoveEvent(self, event):
         if self.buckets and self.plot_rect.contains(event.position()):
@@ -138,6 +159,7 @@ class LiquidationChart(QFrame):
         controls = QHBoxLayout()
         title = QLabel("强平记录 · 模拟数据")
         title.setObjectName("muted")
+        title.setToolTip("在图内滚动鼠标滚轮：向下显示更多柱子，向上放大；显示8至96个时间区间")
         controls.addWidget(title)
         for text, color in (("■ 多头", LONG_COLOR), ("■ 空头", SHORT_COLOR)):
             label = QLabel(text)
@@ -148,12 +170,13 @@ class LiquidationChart(QFrame):
         self.interval.setAccessibleName(f"{instrument} 强平图聚合周期")
         for minutes in (1, 5, 15):
             self.interval.addItem(f"{minutes} 分钟", minutes)
-        self.interval.setToolTip("显示最近20个时间区间；切换周期使用同一组模拟记录重新聚合")
+        self.interval.setToolTip("切换周期使用同一组模拟记录重新聚合；图内滚轮可横向缩放")
         controls.addWidget(self.interval)
         layout.addLayout(controls)
         self.plot = CountPlot()
         layout.addWidget(self.plot, 1)
         self.interval.currentIndexChanged.connect(self.refresh)
+        self.plot.visible_count_changed.connect(self.refresh)
         self.timer = QTimer(self)
         self.timer.setInterval(5000)
         self.timer.timeout.connect(self.simulate)
@@ -163,7 +186,7 @@ class LiquidationChart(QFrame):
     def refresh(self):
         self.plot.minutes = self.interval.currentData()
         self.plot.buckets = aggregate_records(self.source.records, self.plot.minutes,
-                                              datetime.now(timezone.utc).timestamp())
+                                              datetime.now(timezone.utc).timestamp(), count=self.plot.visible_count)
         self.plot.update()
 
     def simulate(self):
