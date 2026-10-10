@@ -41,6 +41,7 @@ QFrame#row { border-bottom: 1px solid #ededee; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
 QScrollArea { border: 0; background: transparent; }
 QSplitter#mainSplitter::handle:vertical { background: #e0e1e3; border: 0; }
+QSplitter#tradingSplitter::handle:horizontal { background: #e0e1e3; border-left: 4px solid #fcfcfc; border-right: 4px solid #fcfcfc; }
 QScrollBar:vertical { background: #f6f6f6; width: 6px; margin: 0; }
 QScrollBar::handle:vertical { background: #d8dadd; border-radius: 3px; min-height: 24px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
@@ -258,7 +259,11 @@ class MainWindow(QMainWindow):
         self.trading_panel = QWidget()
         trading_areas = QHBoxLayout(self.trading_panel)
         trading_areas.setContentsMargins(0, 6, 0, 0)
-        trading_areas.setSpacing(16)
+        self.trading_splitter = QSplitter(Qt.Horizontal)
+        self.trading_splitter.setObjectName("tradingSplitter")
+        self.trading_splitter.setChildrenCollapsible(False)
+        self.trading_splitter.setHandleWidth(9)
+        trading_areas.addWidget(self.trading_splitter)
         for attribute, object_name, title in (
             ("positions_panel", "positionsPanel", "持仓信息"),
             ("orders_panel", "ordersPanel", "委托"),
@@ -268,6 +273,7 @@ class MainWindow(QMainWindow):
             panel.setObjectName(object_name)
             panel.setAccessibleName(title)
             panel.setMinimumHeight(210)
+            panel.setMinimumWidth(180 if attribute == "order_panel" else 220)
             panel_layout = QVBoxLayout(panel)
             panel_layout.setContentsMargins(16, 14, 16, 16)
             heading = QLabel(title)
@@ -275,7 +281,11 @@ class MainWindow(QMainWindow):
             panel_layout.addWidget(heading)
             panel_layout.addStretch()
             setattr(self, attribute, panel)
-            trading_areas.addWidget(panel, 2 if attribute == "order_panel" else 3)
+            self.trading_splitter.addWidget(panel)
+            self.trading_splitter.setStretchFactor(self.trading_splitter.count() - 1, 1)
+        self.trading_splitter.setSizes([400, 400, 400])
+        for index in (1, 2):
+            self.trading_splitter.handle(index).setCursor(Qt.SplitHCursor)
         self.main_splitter.addWidget(self.trading_panel)
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 1)
@@ -301,7 +311,7 @@ class MainWindow(QMainWindow):
         self.position_cards = []
         self.positions_scroll = QScrollArea()
         self.positions_scroll.setWidgetResizable(True)
-        self.positions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.positions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.positions_scroll.setStyleSheet("QScrollArea { border: 0; background: #fcfcfc; }")
         self.positions_content = QWidget()
         self.positions_content.setStyleSheet("background: #fcfcfc;")
@@ -365,7 +375,7 @@ class MainWindow(QMainWindow):
         self.order_cards = []
         self.orders_scroll = QScrollArea()
         self.orders_scroll.setWidgetResizable(True)
-        self.orders_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.orders_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         content = QWidget()
         self.orders_cards_layout = QVBoxLayout(content)
         self.orders_cards_layout.setContentsMargins(0, 0, 0, 0)

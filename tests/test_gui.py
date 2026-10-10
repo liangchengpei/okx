@@ -615,3 +615,28 @@ def test_orders_panel_between_positions_and_order_entry(qtbot):
     assert window.orders_empty.isVisible()
     window.close()
     assert not worker.running
+
+
+def test_trading_splitters_adjust_each_panel_width(qtbot):
+    from PySide6.QtCore import Qt
+
+    window = make_window(qtbot)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    splitter = window.trading_splitter
+    assert splitter.orientation() == Qt.Horizontal
+    assert [splitter.widget(i) for i in range(3)] == [window.positions_panel, window.orders_panel, window.order_panel]
+    before = splitter.sizes()
+    assert max(before) - min(before) <= 1
+    height = window.positions_panel.height()
+    splitter.moveSplitter(before[0] - 80, 1)
+    assert splitter.sizes()[0] < before[0]
+    assert splitter.sizes()[1] > before[1]
+    before = splitter.sizes()
+    splitter.moveSplitter(before[0] + before[1] + splitter.handleWidth() - 80, 2)
+    assert splitter.sizes()[1] < before[1]
+    assert splitter.sizes()[2] > before[2]
+    assert window.positions_panel.height() == window.orders_panel.height() == window.order_panel.height() == height
+    for index in (1, 2):
+        assert splitter.handle(index).toolTip() == ''
+        splitter.moveSplitter(0, index)
+        assert all(splitter.sizes())
