@@ -82,7 +82,7 @@ def test_join_removes_boundary_silence_without_cutting_words():
     assert result.endswith(word + silence(100))
     first_end = result.index(word) + len(word)
     next_start = result.index(word, first_end)
-    assert (next_start - first_end) // 2 == 40  # 15 + 15 + 10 ms.
+    assert (next_start - first_end) // 2 == 8  # Quiet margins overlap; no inserted pause.
     assert len(result) < len(english) + len(chinese) - rate
 
 

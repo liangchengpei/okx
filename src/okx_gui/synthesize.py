@@ -88,20 +88,21 @@ def join_speech(english, chinese, sample_rate):
         if not len(active):
             return samples
         if tail:
-            end = (active[-1] + 1) * window + round(sample_rate * 0.015)
+            end = (active[-1] + 1) * window + round(sample_rate * 0.008)
             return samples[:end]
-        start = max(0, active[0] * window - round(sample_rate * 0.010))
+        start = max(0, active[0] * window - round(sample_rate * 0.008))
         return samples[start:]
 
     first = boundary_samples(english, tail=True)
     second = boundary_samples(chinese, tail=False)
-    # Fade just the join edges to prevent clicks after cutting model-generated silence.
-    fade = min(round(sample_rate * 0.003), len(first), len(second))
-    if fade:
-        first[-fade:] *= np.linspace(1, 0, fade)
-        second[:fade] *= np.linspace(0, 1, fade)
-    pause = np.zeros(round(sample_rate * 0.015))
-    return np.concatenate((first, pause, second)).astype("<i2").tobytes()
+    # Overlap the short quiet margins instead of inserting another pause.
+    # Every sample is retained; the crossfade avoids a click at the join.
+    overlap = min(round(sample_rate * 0.008), len(first), len(second))
+    if not overlap:
+        return np.concatenate((first, second)).astype("<i2").tobytes()
+    fade_in = np.linspace(0, 1, overlap)
+    transition = first[-overlap:] * (1 - fade_in) + second[:overlap] * fade_in
+    return np.concatenate((first[:-overlap], transition, second[overlap:])).astype("<i2").tobytes()
 
 
 def main():
