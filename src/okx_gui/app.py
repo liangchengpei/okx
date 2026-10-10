@@ -16,6 +16,8 @@ QWidget { background: #fcfcfc; color: #16191d; font-size: 14px; }
 QMainWindow { background: #f5f6f8; }
 QFrame#card { border: 1px solid #dedfe2; border-radius: 18px; background: #fcfcfc; }
 QLabel#title { font-size: 19px; font-weight: 600; }
+QLabel#panelTitle { font-size: 16px; font-weight: 600; }
+QFrame#positionsPanel, QFrame#orderPanel { border: 1px solid #e0e1e3; border-radius: 12px; }
 QLabel#badge { background: #ededee; border-radius: 12px; padding: 4px 12px; font-size: 12px; }
 QLineEdit { border: 1px solid #d8dadd; border-radius: 20px; padding: 10px 15px; background: white; }
 QLineEdit:focus { border-color: #747b85; }
@@ -137,8 +139,8 @@ class MainWindow(QMainWindow):
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(1380, 550)
-        self.setMinimumSize(1270, 430)
+        self.resize(1380, 800)
+        self.setMinimumSize(1270, 650)
         self.setStyleSheet(STYLE)
         root = QWidget()
         self.setCentralWidget(root)
@@ -225,6 +227,25 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.toggle_market)
         controls.addWidget(self.start_button)
         layout.addLayout(controls)
+        trading_areas = QHBoxLayout()
+        trading_areas.setSpacing(16)
+        for attribute, object_name, title in (
+            ("positions_panel", "positionsPanel", "持仓信息"),
+            ("order_panel", "orderPanel", "下单"),
+        ):
+            panel = QFrame()
+            panel.setObjectName(object_name)
+            panel.setAccessibleName(title)
+            panel.setMinimumHeight(210)
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(16, 14, 16, 16)
+            heading = QLabel(title)
+            heading.setObjectName("panelTitle")
+            panel_layout.addWidget(heading)
+            panel_layout.addStretch()
+            setattr(self, attribute, panel)
+            trading_areas.addWidget(panel, 1)
+        layout.addLayout(trading_areas)
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
         if auto_start:
