@@ -3,3 +3,12 @@
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_application_data(monkeypatch, tmp_path):
+    """GUI tests must never read or overwrite the user's persistent history."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))

@@ -5,6 +5,8 @@ import math
 import random
 from zoneinfo import ZoneInfo
 
+from okx_gui.liquidation_store import HISTORY_SECONDS, LiquidationRecord, LiquidationStore
+
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -12,13 +14,7 @@ from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayou
 DISPLAY_ZONE = ZoneInfo("Asia/Shanghai")
 LONG_COLOR = "#d94b55"
 SHORT_COLOR = "#15966b"
-HISTORY_MINUTES = 24 * 60
-
-
-@dataclass(frozen=True)
-class LiquidationRecord:
-    timestamp: float
-    side: str  # Position liquidated: long or short, independent of order direction.
+SIMULATION_SEED_MINUTES = 24 * 60
 
 
 @dataclass(frozen=True)
@@ -47,22 +43,31 @@ def aggregate_records(records, minutes, now, count=20):
 
 
 class SimulatedLiquidations:
-    """Keep raw simulated events so switching intervals never regenerates history."""
+    """Restore persisted simulated events and keep raw history for aggregation."""
 
-    def __init__(self, instrument, now):
+    def __init__(self, instrument, now, store=None):
+        self.instrument = instrument
+        self.store = store if store is not None else LiquidationStore()
+        existing = self.store.load(instrument, "simulation", now)
         self.random = random.Random(instrument)
-        self.records = []
-        for minute in range(HISTORY_MINUTES):
+        self.records = existing if existing is not None else []
+        if existing is not None:
+            return
+        for minute in range(SIMULATION_SEED_MINUTES):
             start = now - (minute + 1) * 60
             for _ in range(self.random.randint(0, 18)):
                 self.records.append(LiquidationRecord(
                     start + self.random.random() * 60, self.random.choice(("long", "short"))
                 ))
 
+        self.store.save(instrument, "simulation", self.records, now)
+
     def advance(self, now):
+        new_records = []
         for _ in range(self.random.randint(0, 3)):
-            self.records.append(LiquidationRecord(now, self.random.choice(("long", "short"))))
-        self.records = [record for record in self.records if record.timestamp >= now - HISTORY_MINUTES * 60]
+            new_records.append(LiquidationRecord(now, self.random.choice(("long", "short"))))
+        self.store.save(self.instrument, "simulation", new_records, now)
+        self.records = [record for record in self.records + new_records if record.timestamp >= now - HISTORY_SECONDS]
 
 
 class CountPlot(QWidget):
