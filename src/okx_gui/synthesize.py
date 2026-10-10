@@ -146,7 +146,9 @@ def main():
 
     @lru_cache(maxsize=1)
     def notice_audio():
-        return chinese_audio("行情有变。")
+        # eSpeak IPA collapses bian1 and bian4 to the same "5" tone.
+        # Give this fixed notice an explicit falling 51 contour, verified by listening.
+        return chinese_audio("行情有[[pˈiɛ51n]]。")
 
     def synthesize(text, output):
         notice, letters, chinese_text = split_price_announcement(text)

@@ -108,3 +108,40 @@ def test_notice_preserves_english_name_and_chinese_price():
     assert split_price_announcement("BTC，价格 一") == ("", "B T C", "价格 一")
     assert split_price_announcement("情况紧急") == ("", None, "情况紧急")
     assert split_price_announcement("行情有变。其他内容") == ("", None, "行情有变。其他内容")
+
+
+def test_server_corrects_notice_tone_once_without_changing_prices(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("numpy")
+    import io
+    import json
+    import sys
+    from types import SimpleNamespace
+    from okx_gui import synthesize
+
+    calls = []
+
+    class FakeVoice:
+        config = SimpleNamespace(espeak_voice="cmn", sample_rate=1000)
+
+        @staticmethod
+        def load(path):
+            return FakeVoice()
+
+        def synthesize(self, text, syn_config=None):
+            calls.append(text)
+            yield SimpleNamespace(audio_int16_bytes=b"\x01\x00" * 100)
+
+    monkeypatch.setitem(sys.modules, "piper", SimpleNamespace(
+        PiperVoice=FakeVoice, SynthesisConfig=lambda **kwargs: kwargs,
+    ))
+    monkeypatch.setattr(synthesize, "english_name_audio", lambda *args: b"\x01\x00" * 100)
+    monkeypatch.setattr(sys, "argv", ["synthesize", "--model", str(tmp_path / "fake.onnx"), "--server"])
+    texts = ["行情有变。BTC，价格 一", "行情有变。BTC，价格 二", "情况紧急"]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(
+        json.dumps({"id": i, "text": text, "output": str(tmp_path / f"{i}.wav")}) + "\n"
+        for i, text in enumerate(texts)
+    )))
+    synthesize.main()
+    assert calls == ["行情有[[pˈiɛ51n]]。", "价格 一", "价格 二", "情况紧急"]
+    responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert responses == [{"ready": True}] + [{"id": i, "ok": True} for i in range(3)]
