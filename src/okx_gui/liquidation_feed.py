@@ -1,66 +1,52 @@
-"""Public liquidation feeds. Counts represent received exchange snapshots."""
+"""Bybit public liquidation feed; OKX liquidation collection is paused."""
 import asyncio
 import hashlib
 import json
 import math
 import threading
 import time
+from collections import Counter
 
-import httpx
 from PySide6.QtCore import QThread, Signal
 from websockets import connect
 
 from okx_gui.liquidation_store import LiquidationRecord, LiquidationStore
 
-OKX_URL = 'wss://ws.okx.com/ws/v5/public'
-BINANCE_URL = 'wss://fstream.binance.com/market/ws/!forceOrder@arr'
+BYBIT_URL = 'wss://stream.bybit.com/v5/public/linear'
 
 
-def binance_symbol(instrument):
+def bybit_symbol(instrument):
     parts = instrument.split('-')
-    if len(parts) == 3 and parts[2] == 'SWAP' and parts[1] in ('USDT', 'USDC'):
+    # Only exact USDT perpetual matches; never guess multiplier or renamed tokens.
+    if len(parts) == 3 and parts[2] == 'SWAP' and parts[1] == 'USDT':
         return parts[0] + parts[1]
     return None
 
 
-def record_from_detail(detail, exchange, side, timestamp):
-    value = float(timestamp) / 1000
-    if not math.isfinite(value) or value <= 0 or side not in ('long', 'short'):
-        raise ValueError('Invalid liquidation record')
-    fingerprint = hashlib.sha256(json.dumps(detail, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return LiquidationRecord(value, side, fingerprint, exchange)
-
-
 def parse_liquidations(payload, exchange, instrument):
-    result = []
-    if not isinstance(payload, dict):
-        return result
-    if exchange == 'okx':
-        if payload.get('arg', {}).get('channel') != 'liquidation-orders':
-            return result
-        for item in payload.get('data', []):
-            if not isinstance(item, dict) or item.get('instId') != instrument:
-                continue
-            for detail in item.get('details', []):
-                try:
-                    side = detail.get('posSide')
-                    if side not in ('long', 'short'):
-                        side = {'sell': 'long', 'buy': 'short'}.get(detail.get('side'))
-                    result.append(record_from_detail(detail, exchange, side, detail['ts']))
-                except (KeyError, TypeError, ValueError, AttributeError):
-                    continue
-    else:
-        payload = payload.get('data', payload)
-        if not isinstance(payload, dict) or payload.get('e') != 'forceOrder':
-            return result
-        detail = payload.get('o', {})
+    symbol = bybit_symbol(instrument)
+    if exchange != 'bybit' or not symbol or not isinstance(payload, dict):
+        return []
+    if payload.get('topic') != f'allLiquidation.{symbol}' or not isinstance(payload.get('data'), list):
+        return []
+    result, occurrences = [], Counter()
+    for detail in payload['data']:
         try:
-            if detail.get('s') != binance_symbol(instrument) or str(payload.get('st', 1)) != '1':
-                return result
-            side = {'SELL': 'long', 'BUY': 'short'}.get(detail.get('S'))
-            result.append(record_from_detail(detail, exchange, side, detail['T']))
-        except (KeyError, TypeError, ValueError, AttributeError):
-            pass
+            if detail.get('s') != symbol:
+                continue
+            # Bybit S is POSITION side, unlike Binance's closing order side.
+            side = {'Buy': 'long', 'Sell': 'short'}.get(detail.get('S'))
+            timestamp = float(detail['T']) / 1000
+            if side is None or not math.isfinite(timestamp) or timestamp <= 0:
+                continue
+            encoded = json.dumps(detail, sort_keys=True, separators=(',', ':'))
+            occurrence = occurrences[encoded]
+            occurrences[encoded] += 1
+            identity = json.dumps([payload.get('ts'), encoded, occurrence])
+            fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+            result.append(LiquidationRecord(timestamp, side, fingerprint, 'bybit'))
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+            continue
     return result
 
 
@@ -95,61 +81,52 @@ class LiquidationWorker(QThread):
     async def _run(self):
         with self._lock:
             self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
-        await asyncio.gather(self._platform('okx'), self._platform('binance'))
+        await self._platform('bybit')
+
+    async def _heartbeat(self, socket):
+        while True:
+            await asyncio.sleep(20)
+            await socket.send(json.dumps({'op': 'ping'}))
 
     async def _platform(self, exchange):
+        if exchange != 'bybit':
+            return
+        symbol = bybit_symbol(self.instrument)
+        if symbol is None:
+            self.status.emit(exchange, '不支持该合约（仅同名 USDT 永续）')
+            return
         store = LiquidationStore(self.database_path)
         while not self.isInterruptionRequested():
             try:
                 self.status.emit(exchange, '连接中')
-                verified = True
-                if exchange == 'binance':
-                    symbol = binance_symbol(self.instrument)
-                    if symbol is None:
-                        self.status.emit(exchange, '不支持该合约')
+                async with connect(BYBIT_URL, open_timeout=10, close_timeout=1,
+                                   ping_interval=20, ping_timeout=20) as socket:
+                    await socket.send(json.dumps({'op': 'subscribe', 'args': [f'allLiquidation.{symbol}']}))
+                    acknowledgement = json.loads(await asyncio.wait_for(socket.recv(), 10))
+                    if acknowledgement.get('op') != 'subscribe' or acknowledgement.get('success') is not True:
+                        self.status.emit(exchange, f"订阅失败 · {str(acknowledgement.get('ret_msg', '未知响应'))[:100]}")
                         return
+                    self.status.emit(exchange, '已订阅 · 等待记录')
+                    heartbeat = asyncio.create_task(self._heartbeat(socket))
                     try:
-                        async with httpx.AsyncClient(timeout=10) as client:
-                            response = await client.get('https://fapi.binance.com/fapi/v1/exchangeInfo')
-                            response.raise_for_status()
-                            listed = any(item.get('symbol') == symbol and item.get('contractType') == 'PERPETUAL'
-                                         and item.get('status') == 'TRADING' for item in response.json()['symbols'])
-                        if not listed:
-                            self.status.emit(exchange, '未上市该合约')
-                            return
-                    except (httpx.HTTPError, ValueError, KeyError, TypeError):
-                        verified = False  # Public websocket may work even when REST is region restricted.
-                url = OKX_URL if exchange == 'okx' else BINANCE_URL
-                async with connect(url, open_timeout=10, close_timeout=1, ping_interval=20, ping_timeout=20) as socket:
-                    if exchange == 'okx':
-                        inst_type = 'SWAP' if self.instrument.endswith('-SWAP') else 'FUTURES'
-                        await socket.send(json.dumps({'op': 'subscribe', 'args': [
-                            {'channel': 'liquidation-orders', 'instType': inst_type}]}))
-                    else:
-                        self.status.emit(exchange, '已连接 · 等待记录' if verified else '已连接 · 合约未核实（REST受限）')
-                    while not self.isInterruptionRequested():
-                        try:
-                            message = await asyncio.wait_for(socket.recv(), 20 if exchange == 'okx' else 60)
-                        except asyncio.TimeoutError:
-                            if exchange == 'okx':
-                                await socket.send('ping')
-                                message = await asyncio.wait_for(socket.recv(), 10)
-                            else:
+                        while not self.isInterruptionRequested():
+                            if heartbeat.done():
+                                heartbeat.result()
+                            try:
+                                message = await asyncio.wait_for(socket.recv(), 30)
+                            except asyncio.TimeoutError:
+                                raise TimeoutError('Bybit 心跳超时')
+                            try:
+                                payload = json.loads(message)
+                            except (ValueError, TypeError):
                                 continue
-                        if message == 'pong':
-                            continue
-                        try:
-                            payload = json.loads(message)
-                        except (ValueError, TypeError):
-                            continue
-                        if isinstance(payload, dict) and payload.get('event') == 'error':
-                            raise RuntimeError(str(payload.get('msg', '订阅失败'))[:120])
-                        if isinstance(payload, dict) and payload.get('event') == 'subscribe':
-                            self.status.emit(exchange, '已订阅 · 等待记录')
-                        records = parse_liquidations(payload, exchange, self.instrument)
-                        if records:
-                            await asyncio.to_thread(store.save, self.instrument, 'live', records, time.time())
-                            self.status.emit(exchange, '接收中')
+                            records = parse_liquidations(payload, 'bybit', self.instrument)
+                            if records:
+                                await asyncio.to_thread(store.save, self.instrument, 'live', records, time.time())
+                                self.status.emit(exchange, '接收中')
+                    finally:
+                        heartbeat.cancel()
+                        await asyncio.gather(heartbeat, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -31,16 +31,19 @@ class LiquidationStore:
                 instrument TEXT NOT NULL, source TEXT NOT NULL,
                 PRIMARY KEY (instrument, source))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(liquidation_records)")}
-            if columns and "exchange" not in columns:
+            schema = db.execute("SELECT sql FROM sqlite_master WHERE name='liquidation_records'").fetchone()
+            migrate = bool(columns) and ("exchange" not in columns or "'bybit'" not in schema[0])
+            if migrate:
                 db.execute("ALTER TABLE liquidation_records RENAME TO liquidation_records_legacy")
             db.execute("""CREATE TABLE IF NOT EXISTS liquidation_records (
                 instrument TEXT NOT NULL, source TEXT NOT NULL, event_id TEXT NOT NULL,
                 timestamp REAL NOT NULL, side TEXT NOT NULL CHECK(side IN ('long', 'short')),
-                exchange TEXT NOT NULL CHECK(exchange IN ('okx', 'binance')),
+                exchange TEXT NOT NULL CHECK(exchange IN ('okx', 'binance', 'bybit')),
                 PRIMARY KEY (instrument, source, exchange, event_id))""")
-            if columns and "exchange" not in columns:
-                db.execute("""INSERT INTO liquidation_records
-                    SELECT instrument, source, event_id, timestamp, side, 'okx'
+            if migrate:
+                exchange_column = "exchange" if "exchange" in columns else "'okx'"
+                db.execute(f"""INSERT INTO liquidation_records
+                    SELECT instrument, source, event_id, timestamp, side, {exchange_column}
                     FROM liquidation_records_legacy""")
                 db.execute("DROP TABLE liquidation_records_legacy")
             db.execute("""CREATE INDEX IF NOT EXISTS liquidation_time

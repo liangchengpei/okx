@@ -164,12 +164,12 @@ requirements-lock.txt   验收依赖快照
 
 ### 强平记录实时图
 
-每个自选合约显示币安与 OKX 公开强平流接收到的记录数量。红色为多头、绿色为空头；下段深色是币安，上段浅色是 OKX，柱高为两平台合计，悬停显示明细。横轴为北京时间，支持独立切换 1、5、15 分钟聚合和滚轮缩放，默认 44 组，可显示 10–125 组，最新时间在右侧。柱组间隙与单柱宽为 1:1。
+目前只统计 Bybit 的真实强平记录，暂停 OKX 强平订阅与计数。OKX 实时报价、持仓和语音功能照常工作。红色为多头强平，绿色为空头强平，保留两根并排柱子；下段深色显示 Bybit，OKX 上段结构预留、当前始终为零，旧 OKX 和币安历史不参与当前图表统计。悬停可查看明细。横轴为北京时间，支持独立切换 1、5、15 分钟聚合及滚轮缩放，默认 44 组，可显示 10–125 组，最新时间在右侧。柱组间隙与单柱宽为 1:1。
 
-图表每秒刷新一次。启动即在后台连接两平台，独立重连、心跳保活；添加合约启动对应订阅，删除合约和关闭窗口结束连接。界面分别显示连接、订阅、接收、重连及不支持的状态。币安目前匹配同名基础币种的 USDT/USDC 永续合约，不猜测不同名称或倍率币种；合约列表核验明确未上市时提示未上市，REST 不可访问时仍连接公开强平流并标记合约未核实。OKX 按产品类型订阅强平频道后过滤所选合约。
+图表每秒刷新一次，启动即在后台订阅 `wss://stream.bybit.com/v5/public/linear` 的 `allLiquidation.{symbol}`，每20秒发送应用层心跳，网络断开自动重连。添加合约启动对应连接，删除合约及关闭窗口结束连接。当前支持同名 USDT 永续映射（例如 BTC-USDT-SWAP → BTCUSDT），不猜测倍率币种、改名币种或不同产品；不支持或订阅被拒绝时显示具体状态。公共强平流无需 API key。
 
-币安 `SELL` 强平订单计入多头、`BUY` 计入空头；OKX 优先使用 `posSide`，缺少方向时按平仓买卖方向判断。统计单位是接收到的强平记录条数，不是金额或交易所完整爆仓订单数。币安每合约每 1000 毫秒只推送最新强平订单快照。无实际推送时柱子为零，网络断开期间无法保证补齐历史。不会生成模拟数据填充真实图。
+使用 Bybit 的完整强平推送 `allLiquidation`，不是旧的 `liquidation` 频道。Bybit `S=Buy` 表示多头被强平，`S=Sell` 表示空头被强平，一批推送中的每条明细各计一次。统计单位为接收到的强平记录条数，不是金额；断线或程序关闭期间无法保证补齐历史，无记录的时间段显示零，不使用模拟记录填充。
 
-SQLite 文件默认是 `~/.local/share/okx-trader/liquidations.sqlite3`，可通过 `XDG_DATA_HOME` 改变根目录。真实数据标记为 `live`，与已有 `simulation` 历史隔离，按合约、平台及消息内容指纹去重，防止相同快照重复计数；接口没有提供可靠订单 ID 时，完全相同的消息视为同一记录。每批记录在后台事务写入，保留最近 30 天，重启读取真实历史。图表只查询当前可见时间范围。旧数据库自动升级，原有模拟记录保留但不显示在实时图中。Qt 原生绘制，无需增加绘图库。
+SQLite 文件默认是 `~/.local/share/okx-trader/liquidations.sqlite3`，可通过 `XDG_DATA_HOME` 改变根目录。真实数据标记为 `live`，与 `simulation` 历史隔离，按合约、平台及消息指纹去重。相同批次中内容完全相同的多条明细仍分别计数；重复收到同一批次则不重复计数。每批在后台事务写入，保留最近30天，重启读取 Bybit 历史。图表只查询当前可见时间范围。旧数据库自动升级以支持 Bybit，已有币安、OKX 数据原样保留，不改名为 Bybit，不参与当前图表统计。Qt 原生绘制，无需新增绘图库。
 
-接口说明：[OKX 公共强平频道](https://www.okx.com/docs-v5/en/#public-data-websocket-liquidation-orders-channel)、[币安全市场强平快照流](https://developers.binance.info/docs/derivatives/usds-margined-futures/websocket-market-streams/All-Market-Mini-Tickers-Stream)。
+接口说明：[Bybit 完整强平流](https://bybit-exchange.github.io/docs/v5/websocket/public/all-liquidation)、[Bybit WebSocket 连接与心跳](https://bybit-exchange.github.io/docs/v5/ws/connect)。

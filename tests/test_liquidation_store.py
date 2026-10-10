@@ -95,3 +95,22 @@ def test_legacy_database_migrates_without_losing_records(tmp_path):
     record = LiquidationRecord(1000, 'short', 'old', 'binance')
     store.save('BTC', 'simulation', [record], 1000)
     assert len(LiquidationStore(path).load('BTC', 'simulation', 1000)) == 2
+
+
+def test_two_platform_database_upgrades_to_bybit_without_relabeling_old_data(tmp_path):
+    path = tmp_path / 'two-platform.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE streams (instrument TEXT, source TEXT, PRIMARY KEY(instrument,source))')
+        db.execute('INSERT INTO streams VALUES (?,?)', ('BTC', 'live'))
+        db.execute('''CREATE TABLE liquidation_records (
+            instrument TEXT, source TEXT, event_id TEXT, timestamp REAL, side TEXT,
+            exchange TEXT CHECK(exchange IN ('okx', 'binance')),
+            PRIMARY KEY(instrument,source,exchange,event_id))''')
+        db.executemany('INSERT INTO liquidation_records VALUES (?,?,?,?,?,?)', [
+            ('BTC','live','old',1000,'long','okx'), ('BTC','live','old',1000,'short','binance')])
+    store = LiquidationStore(path)
+    new = LiquidationRecord(1000, 'long', 'old', 'bybit')
+    store.save('BTC', 'live', [new], 1000)
+    records = LiquidationStore(path).load('BTC', 'live', 1000)
+    assert len(records) == 3
+    assert {r.exchange for r in records} == {'okx', 'binance', 'bybit'}
