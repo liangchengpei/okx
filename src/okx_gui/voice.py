@@ -18,16 +18,18 @@ def positive_decimal(text):
 
 
 def spoken_price(price, chinese):
-    """Spell decimal digits explicitly so TTS cannot drop the decimal point."""
+    """Speak every digit literally, including zeros and the decimal point."""
     number = format(positive_decimal(str(price)), "f")
     integer, point, fraction = number.partition(".")
-    if not point:
-        return integer
     digits = "零一二三四五六七八九" if chinese else (
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"
     )
-    spoken = [digits[int(digit)] for digit in fraction]
-    return f"{integer} 点 {''.join(spoken)}" if chinese else f"{integer} point {' '.join(spoken)}"
+    spoken_integer = " ".join(digits[int(digit)] for digit in integer)
+    if not point:
+        return spoken_integer
+    spoken_fraction = " ".join(digits[int(digit)] for digit in fraction)
+    point_word = "点" if chinese else "point"
+    return f"{spoken_integer} {point_word} {spoken_fraction}"
 
 
 class PriceLadder:
@@ -202,7 +204,7 @@ class SpeechService(QObject):
         instrument, price = self.pending.popleft()
         self.current = instrument
         self._speaking = False
-        name = instrument.replace("-", " ")
+        name = instrument.split("-", 1)[0]
         price = spoken_price(price, self.chinese)
         text = f"{name}，价格 {price}" if self.chinese else f"{name}, price {price}"
         self.tts.say(text)

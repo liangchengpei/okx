@@ -97,6 +97,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     monkeypatch.setattr(voice, "QTextToSpeech", FakeTTS)
     service = voice.SpeechService(prefer_native=False, max_pending=2)
     service.announce("BTC-USDT-SWAP", "82600")
+    assert service.tts.calls == ["BTC, price eight two six zero zero"]
     service.announce("ETH-USDT-SWAP", "3000")
     service.announce("ETH-USDT-SWAP", "3010")
     service.announce("SOL-USDT-SWAP", "100")
@@ -110,8 +111,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     assert len(service.tts.calls) == 1
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == 2)
-    assert "3010" in service.tts.calls[-1]
-    assert "3000" not in service.tts.calls[-1]
+    assert service.tts.calls[-1] == "ETH, price three zero one zero"
     service.announce("ETH-USDT-SWAP", "3020")
     service.cancel("ETH-USDT-SWAP", interrupt=False)
     assert service.current == "ETH-USDT-SWAP"
@@ -187,12 +187,12 @@ def test_invalid_range(low, high, step):
 
 
 @pytest.mark.parametrize("price,chinese,expected", [
-    ("82600.05", True, "82600 点 零五"),
-    ("0.0012300", True, "0 点 零零一二三零零"),
-    ("82600", True, "82600"),
-    ("82600.0", True, "82600 点 零"),
-    ("1.2E-5", True, "0 点 零零零零一二"),
-    ("82600.05", False, "82600 point zero five"),
+    ("82600.05", True, "八 二 六 零 零 点 零 五"),
+    ("0.0012300", True, "零 点 零 零 一 二 三 零 零"),
+    ("82600", True, "八 二 六 零 零"),
+    ("82600.0", True, "八 二 六 零 零 点 零"),
+    ("1.2E-5", True, "零 点 零 零 零 零 一 二"),
+    ("82600.05", False, "eight two six zero zero point zero five"),
 ])
 def test_decimal_price_is_spoken_with_point_and_each_digit(price, chinese, expected):
     from okx_gui.voice import spoken_price
@@ -262,7 +262,7 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     assert service.current == service.EMERGENCY  # Finish current audio first.
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == "ETH")
-    assert "3000" in service.tts.calls[-1]
+    assert service.tts.calls[-1] == "ETH，价格 三 零 零 零"
     service.cancel("ETH", interrupt=False)
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
