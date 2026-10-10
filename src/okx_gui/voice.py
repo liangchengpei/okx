@@ -33,9 +33,9 @@ def spoken_price(price, chinese):
 
 
 class PriceLadder:
-    """Speak only outside an inclusive quiet range, using boundary-based steps."""
+    """Track interval steps inside a range and boundary-based steps outside it."""
 
-    def __init__(self, lower, upper, step, *, allow_once=False):
+    def __init__(self, lower, upper, step, *, allow_once=False, inside_enabled=False):
         lower_text, upper_text = str(lower).strip(), str(upper).strip()
         try:
             self.lower = Decimal(lower_text) if lower_text else Decimal(0)
@@ -52,6 +52,10 @@ class PriceLadder:
         if not step_text and not lower_text and not upper_text:
             raise ValueError("单次价格播报模式请至少填写一个价格边界。")
         self.step = positive_decimal(step_text) if step_text else None
+        if inside_enabled and self.step is None:
+            raise ValueError("区间内播报需要填写价格间隔。")
+        self.inside_enabled = inside_enabled
+        self.inside_level = None
         self.current_based = not lower_text and not upper_text
         self.base = None
         self.once_fired = False
@@ -64,6 +68,8 @@ class PriceLadder:
             raise ValueError(f"当前价格 {price} 不处于设置范围 [{self.lower}, {self.upper}] 内，请调整价格范围。")
         if self.current_based and self.base is None:
             self.base = self.level = price
+        elif self.inside_enabled and self.inside_level is None:
+            self.inside_level = price
 
     def feed(self, price):
         price = positive_decimal(str(price))
@@ -80,7 +86,17 @@ class PriceLadder:
             return True
         if self.lower <= price <= self.upper:
             self.level = self.side = None
+            if self.inside_enabled:
+                if self.inside_level is None:
+                    self.inside_level = price
+                    return False
+                distance = price - self.inside_level
+                steps = (abs(distance) / self.step).to_integral_value(rounding=ROUND_FLOOR)
+                if steps:
+                    self.inside_level += steps * self.step if distance > 0 else -steps * self.step
+                    return True
             return False
+        self.inside_level = None
         side = "low" if price < self.lower else "high"
         if self.step is None:
             self.side = side
@@ -178,12 +194,12 @@ class SpeechService(QObject):
             self.emergency_active.setdefault(key, None)
             self._next()
 
-    def announce(self, instrument, price, *, alarm=True, side=None):
+    def announce(self, instrument, price, *, alarm=True, side=None, movement=None):
         key = (instrument, side) if side is not None else instrument
         if alarm and key in self.emergency_enabled:
             self.emergency_active.setdefault(key, None)
         # A full deque evicts only the oldest waiting utterance, never the active one.
-        self.pending.append((instrument, price))
+        self.pending.append((instrument, price, movement))
         self._next()
 
     def _next(self):
@@ -201,13 +217,19 @@ class SpeechService(QObject):
                 self._speaking = False
                 self.tts.say("情况紧急" if self.chinese else "Emergency")
             return
-        instrument, price = self.pending.popleft()
+        instrument, price, movement = self.pending.popleft()
         self.current = instrument
         self._speaking = False
         name = instrument.split("-", 1)[0]
         price = spoken_price(price, self.chinese)
-        text = (f"行情有变。{name}，价格 {price}" if self.chinese
-                else f"Market update. {name}, price {price}")
+        action = {"high": "突破", "low": "跌破"}.get(movement)
+        if action:
+            english_action = "breaks above" if movement == "high" else "breaks below"
+            text = (f"{name}，价格{action} {price}" if self.chinese
+                    else f"{name}, price {english_action} {price}")
+        else:
+            text = (f"行情有变。{name}，价格 {price}" if self.chinese
+                    else f"Market update. {name}, price {price}")
         self.tts.say(text)
 
     def _state_changed(self, state):

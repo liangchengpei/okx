@@ -13,7 +13,7 @@ import wave
 
 def split_contract_name(text):
     """Keep the Chinese price intact and spell the contract in English."""
-    match = re.match(r"([A-Za-z0-9]+)，(?=价格 )", text)
+    match = re.match(r"([A-Za-z0-9]+)，(?=价格(?:突破|跌破)? )", text)
     if not match:
         return None, text
     return " ".join(match[1].upper()), text[match.end():]
@@ -22,10 +22,10 @@ def split_contract_name(text):
 def split_price_announcement(text):
     """Separate the Chinese notice without losing English contract pronunciation."""
     prefix = "行情有变。"
-    body = text.removeprefix(prefix)
-    letters, price_text = split_contract_name(body)
-    if letters and body != text:
-        return prefix, letters, price_text
+    if text.startswith(prefix):
+        letters, price_text = split_contract_name(text[len(prefix):])
+        if letters:
+            return prefix, letters, price_text
     letters, price_text = split_contract_name(text)
     return "", letters, price_text
 
@@ -138,6 +138,8 @@ def main():
         ).audio
 
     def chinese_audio(text):
+        text = text.replace("价格突破", "价格突[[phˈo5↓]]")
+        text = text.replace("价格跌破", "价格跌[[phˈo5↓]]")
         return b"".join(
             chunk.audio_int16_bytes for chunk in voice.synthesize(
                 text, syn_config=SynthesisConfig(length_scale=1.0)
@@ -146,8 +148,7 @@ def main():
 
     @lru_cache(maxsize=1)
     def notice_audio():
-        # eSpeak IPA collapses bian1 and bian4 to the same "5" tone.
-        # Give this fixed notice an explicit falling 51 contour, verified by listening.
+        # Restore the fourth tone lost by eSpeak IPA in this fixed notice.
         return chinese_audio("行情有[[pˈiɛ51n]]。")
 
     def synthesize(text, output):

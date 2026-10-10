@@ -4,7 +4,7 @@ import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -76,7 +76,7 @@ class ContractRow(QFrame):
         self.low_input = QLineEdit()
         self.low_input.setPlaceholderText("低价 / 0")
         self.low_input.setAccessibleName(f"{instrument} 低价格")
-        self.low_input.setToolTip("留空默认为 0，不限制下方价格；范围内静音，范围外阶梯播报")
+        self.low_input.setToolTip("留空默认为 0，不限制下方价格；可选择区间内按间隔播报或静音")
         self.step_input = QLineEdit()
         self.step_input.setPlaceholderText("价格间隔")
         self.step_input.setToolTip("上下限都留空：以开始时现价为基准按间隔播报；开启紧急开关后可留空间隔，进入单次价格模式")
@@ -103,7 +103,13 @@ class ContractRow(QFrame):
         voice.addLayout(settings)
         self.voice_state = QLabel("播报未启动")
         self.voice_state.setObjectName("muted")
-        voice.addWidget(self.voice_state)
+        self.inside_checkbox = QCheckBox("区间内播报")
+        self.inside_checkbox.setAccessibleName(f"{instrument} 区间内播报")
+        self.inside_checkbox.setToolTip("勾选后从启动时现价按间隔播报，回到区间时重新取基准；未勾选则区间内静音。上下限都留空时仍按现价基准播报。")
+        voice_status = QHBoxLayout()
+        voice_status.addWidget(self.inside_checkbox)
+        voice_status.addWidget(self.voice_state, 1)
+        voice.addLayout(voice_status)
         layout.addLayout(voice)
         self.remove_button = QPushButton("×")
         self.remove_button.setObjectName("remove")
@@ -288,7 +294,8 @@ class MainWindow(QMainWindow):
             return
         try:
             ladder = PriceLadder(row.low_input.text(), row.high_input.text(), row.step_input.text(),
-                                 allow_once=any(button.isChecked() for button in row.emergency_buttons.values()))
+                                 allow_once=any(button.isChecked() for button in row.emergency_buttons.values()),
+                                 inside_enabled=row.inside_checkbox.isChecked())
             if not self.worker or self.worker.isInterruptionRequested() or row.price.text() == "--":
                 raise ValueError("尚无有效的实时价格，请先启动行情并等待该合约报价，再开始播报。")
             ladder.validate_current(row.price.text())
@@ -307,9 +314,10 @@ class MainWindow(QMainWindow):
         row.high_input.setEnabled(False)
         row.low_input.setEnabled(False)
         row.step_input.setEnabled(False)
+        row.inside_checkbox.setEnabled(False)
         row.voice_button.setText("停止播报")
         row.voice_state.setText(f"现价基准 {ladder.base} · 间隔 {ladder.step}" if ladder.current_based
-                                else f"范围内静音 [{ladder.lower}, {ladder.upper}]")
+                                else self.range_voice_status(ladder))
         if not self.worker:
             self.toggle_market()
         if row.price.text() != "--":
@@ -323,9 +331,15 @@ class MainWindow(QMainWindow):
         row.high_input.setEnabled(True)
         row.low_input.setEnabled(True)
         row.step_input.setEnabled(True)
+        row.inside_checkbox.setEnabled(True)
         row.voice_button.setText("开始播报")
         row.voice_state.setText("播报未启动")
         self.speech.cancel(inst)
+
+    @staticmethod
+    def range_voice_status(ladder):
+        mode = f"范围内按间隔 {ladder.step} 播报" if ladder.inside_enabled else "范围内静音"
+        return f"{mode} [{ladder.lower}, {ladder.upper}]"
 
     def process_voice(self, inst, price):
         row = self.rows[inst]
@@ -341,13 +355,14 @@ class MainWindow(QMainWindow):
         side = "low" if value < row.ladder.lower else "high" if value > row.ladder.upper else None
         if row.ladder.step is None and side and not row.emergency_buttons[side].isChecked():
             return
+        if side is None and was_outside:
+            self.speech.cancel(inst, interrupt=False)
         if row.ladder.feed(price):
-            row.voice_state.setText(f"范围外 · 最近播报 {price}")
-            self.speech.announce(inst, price, side=side)
+            label = {"high": "突破上限", "low": "跌破下限"}.get(side, "范围内")
+            row.voice_state.setText(f"{label} · 最近播报 {price}")
+            self.speech.announce(inst, price, side=side, movement=side)
         elif row.ladder and row.ladder.side is None:
-            if was_outside:
-                self.speech.cancel(inst, interrupt=False)
-            row.voice_state.setText(f"范围内静音 [{row.ladder.lower}, {row.ladder.upper}]")
+            row.voice_state.setText(self.range_voice_status(row.ladder))
 
         if side:
             self.speech.trigger_emergency(inst, side)

@@ -99,9 +99,9 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     service.announce("BTC-USDT-SWAP", "82600")
     assert service.tts.calls == ["Market update. BTC, price eight two six zero zero"]
     service.announce("ETH-USDT-SWAP", "3000")
-    service.announce("ETH-USDT-SWAP", "3010")
+    service.announce("ETH-USDT-SWAP", "3010", movement="high")
     service.announce("SOL-USDT-SWAP", "100")
-    assert list(service.pending) == [("ETH-USDT-SWAP", "3010"), ("SOL-USDT-SWAP", "100")]
+    assert list(service.pending) == [("ETH-USDT-SWAP", "3010", "high"), ("SOL-USDT-SWAP", "100", None)]
     assert service.current == "BTC-USDT-SWAP"
     service.tts.stateChanged.emit(service.tts.State.Ready)  # Ignore a stale notification.
     assert service.current == "BTC-USDT-SWAP"
@@ -111,7 +111,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     assert len(service.tts.calls) == 1
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == 2)
-    assert service.tts.calls[-1] == "Market update. ETH, price three zero one zero"
+    assert service.tts.calls[-1] == "ETH, price breaks above three zero one zero"
     service.announce("ETH-USDT-SWAP", "3020")
     service.cancel("ETH-USDT-SWAP", interrupt=False)
     assert service.current == "ETH-USDT-SWAP"
@@ -283,11 +283,13 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service.cancel()
     service.set_emergency("BTC", False)
     service.set_emergency("BTC", True, side="low")
-    service.announce("BTC", "83000", side="high")
+    service.announce("BTC", "83000", side="high", movement="high")
     assert not service.emergency_active
+    assert service.tts.calls[-1] == "BTC，价格突破 八 三 零 零 零"
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current is None)
-    service.announce("BTC", "82000", side="low")
+    service.announce("BTC", "82000", side="low", movement="low")
+    assert service.tts.calls[-1] == "BTC，价格跌破 八 二 零 零 零"
     assert ("BTC", "low") in service.emergency_active
     service.set_emergency("BTC", True, side="high")
     service.announce("BTC", "84000", side="high")
@@ -377,3 +379,34 @@ def test_current_based_decimal_precision_and_new_start():
     restarted = PriceLadder("", "", "0.001")
     restarted.validate_current("0.13")
     assert restarted.base == Decimal("0.13")
+
+
+def test_inside_interval_steps_and_reentry_rebase():
+    ladder = PriceLadder("100", "200", "10", inside_enabled=True)
+    ladder.validate_current("150")
+    for price, expected, side in [
+        ("150", False, None), ("159.99", False, None), ("160", True, None),
+        ("155", False, None), ("150", True, None), ("200", True, None),
+        ("200.1", True, "high"), ("201", False, "high"), ("210", True, "high"),
+        ("199", False, None), ("189", True, None),
+        ("99", True, "low"), ("98", False, "low"), ("90", True, "low"),
+        ("100", False, None), ("110", True, None),
+    ]:
+        assert ladder.feed(price) == expected, price
+        assert ladder.side == side, price
+
+
+def test_inside_steps_preserve_decimal_precision_with_one_bound():
+    ladder = PriceLadder("", "1", "0.01", inside_enabled=True)
+    ladder.validate_current("0.12345")
+    assert not ladder.feed("0.133449")
+    assert ladder.feed("0.15345")
+    assert ladder.inside_level == Decimal("0.15345")
+    assert not ladder.feed("0.15345")
+    assert ladder.feed("1.001")
+    assert ladder.side == "high"
+
+
+def test_inside_reporting_requires_interval_even_with_emergency():
+    with pytest.raises(ValueError, match="区间内播报需要填写价格间隔"):
+        PriceLadder("100", "200", "", allow_once=True, inside_enabled=True)
