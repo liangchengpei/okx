@@ -116,6 +116,11 @@ def join_speech(english, chinese, sample_rate):
     return np.concatenate((first[:-overlap], transition, second[overlap:])).astype("<i2").tobytes()
 
 
+def correct_decimal_point_tone(text):
+    """Apply third-tone sandhi before 五/九 without changing the digits."""
+    return re.sub(r'点(?=\s*[五九])', '[[tˈiɛ2n]]', text)
+
+
 def main():
     from piper import PiperVoice, SynthesisConfig
 
@@ -138,6 +143,7 @@ def main():
         ).audio
 
     def chinese_audio(text):
+        text = correct_decimal_point_tone(text)
         text = text.replace("价格突破", "价格突[[phˈo5↓]]")
         text = text.replace("价格跌破", "价格跌[[phˈo5↓]]")
         return b"".join(

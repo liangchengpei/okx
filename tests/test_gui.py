@@ -187,7 +187,7 @@ def test_range_voice_and_return_to_silence(qtbot):
 def test_voice_test_button_does_not_start_market(qtbot):
     window = make_window(qtbot)
     window.test_voice_button.click()
-    assert window.speech.calls == [("BTC-USDT-SWAP", "82600.05")]
+    assert window.speech.calls == [("BTC-USDT-SWAP", "82601.5")]
     assert window.worker is None
 
 

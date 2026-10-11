@@ -161,3 +161,17 @@ def test_inside_direction_preserves_english_name_and_chinese_price(action):
 
     assert split_price_announcement(f'行情有变，BTC价格{action} 八 二 六 零 零') == (
         '行情有变，', 'B T C', f'价格{action} 八 二 六 零 零')
+
+
+@pytest.mark.parametrize('digit', ['五', '九'])
+def test_decimal_point_uses_second_tone_before_third_tone_digit(digit):
+    from okx_gui.synthesize import correct_decimal_point_tone
+    assert correct_decimal_point_tone(f'价格 八 二 六 零 一 点 {digit}') == (
+        f'价格 八 二 六 零 一 [[tˈiɛ2n]] {digit}')
+
+
+@pytest.mark.parametrize('digit', ['零', '一', '二', '三', '四', '六', '七', '八'])
+def test_decimal_point_keeps_original_tone_before_other_digits(digit):
+    from okx_gui.synthesize import correct_decimal_point_tone
+    text = f'价格 八 二 六 零 一 点 {digit}'
+    assert correct_decimal_point_tone(text) == text
