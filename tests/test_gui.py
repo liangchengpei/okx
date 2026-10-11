@@ -592,10 +592,13 @@ def test_monitor_height_follows_contract_count(qtbot):
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     initial = window.main_splitter.sizes()[0]
     assert window.add_contract('ETH-USDT-SWAP')
-    qtbot.waitUntil(lambda: window.main_splitter.sizes()[0] > initial)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert window.main_splitter.sizes()[0] >= initial
+    assert window.scroll.verticalScrollBar().maximum() > 0
     grown = window.main_splitter.sizes()[0]
     window.remove_contract('ETH-USDT-SWAP')
-    qtbot.waitUntil(lambda: window.main_splitter.sizes()[0] < grown)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert window.main_splitter.sizes()[0] <= grown
     assert abs(window.main_splitter.sizes()[0] - initial) <= 2
     for index in range(15):
         window.add_contract(f'TEST{index}-USDT-SWAP')

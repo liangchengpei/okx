@@ -17,4 +17,6 @@ def isolated_application_data(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def offline_liquidation_workers(monkeypatch):
     from okx_gui.liquidation_feed import LiquidationWorker
+    from okx_gui.funding import FundingWorker
+    monkeypatch.setattr(FundingWorker, "start", lambda self: None)
     monkeypatch.setattr(LiquidationWorker, "start", lambda self: None)

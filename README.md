@@ -173,3 +173,13 @@ requirements-lock.txt   验收依赖快照
 SQLite 文件默认是 `~/.local/share/okx-trader/liquidations.sqlite3`，可通过 `XDG_DATA_HOME` 改变根目录。真实数据标记为 `live`，与 `simulation` 历史隔离，按合约、平台及消息指纹去重。相同批次中内容完全相同的多条明细仍分别计数；重复收到同一批次则不重复计数。每批在后台事务写入，保留最近30天，重启读取 Bybit 历史。图表只查询当前可见时间范围。旧数据库自动升级以支持 Bybit，已有币安、OKX 数据原样保留，不改名为 Bybit，不参与当前图表统计。Qt 原生绘制，无需新增绘图库。
 
 接口说明：[Bybit 完整强平流](https://bybit-exchange.github.io/docs/v5/websocket/public/all-liquidation)、[Bybit WebSocket 连接与心跳](https://bybit-exchange.github.io/docs/v5/ws/connect)。
+
+### 实时资金费率曲线
+
+每个合约的强平图下方显示 OKX 当前资金费率，曲线为蓝色，横轴为北京时间，纵轴为百分比。每秒通过公共 `/api/v5/public/funding-rate` 接口采集 `fundingRate`，使用本机成功收到响应的时间作为采样时间，接口更新时间不变时仍保留每秒采样；不是已结算历史费率，不年化。按本机采样时间直接绘制每条真实采样，仅显示连线、不绘制圆点，不分桶、不累加；时间轴随缓存数据自动展开，最少显示1小时、最多7天。鼠标悬停可查看附近采样的费率和时间。
+
+SQLite 默认保存至 `~/.local/share/okx-trader/funding_rates.sqlite3`（支持 `XDG_DATA_HOME`），实时采样使用独立的 `funding_samples` 表，与旧结算历史隔离，自动去重并清理7天前的数据。重启恢复缓存。启动前及断线期间的实时历史无法补齐，不生成模拟数据填充空缺；长时间缺失时曲线断开。请求失败时保留有效缓存并自动重试。公共接口无需 API key。
+
+接口说明：[OKX 当前资金费率](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate)。
+
+资金费率请求默认读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量。也可单独为资金费率接口指定 HTTP 代理，例如 `OKX_FUNDING_PROXY=http://127.0.0.1:7890 bash run_gui.sh`（请换成实际地址）。未设置时保持默认网络配置；修改后重启程序生效。若平台返回地区限制，请检查代理出口是否满足平台访问要求。
