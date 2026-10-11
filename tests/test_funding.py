@@ -170,3 +170,48 @@ def test_wheel_zoom_keeps_latest_time_and_survives_refresh(qtbot):
         wheel(-2400)
     assert plot.span == RETENTION_MS
     assert chart.shutdown()
+
+
+def test_live_updates_and_timer_do_not_reread_database(qtbot, monkeypatch):
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    def unexpected_read(*args):
+        pytest.fail('Live refresh must not reread the entire database')
+    monkeypatch.setattr(chart.store, 'load', unexpected_read)
+    now = int(time.time() * 1000)
+    point = FundingPoint('okx', now, Decimal('0.0001'))
+    chart.append_sample(point)
+    chart.advance_time()
+    chart.append_sample(point)
+    assert chart.plot.points == [point]
+    assert chart.shutdown()
+
+
+def test_paint_computes_time_span_once(qtbot, monkeypatch):
+    from okx_gui.funding_chart import FundingPlot
+    plot = FundingPlot()
+    qtbot.addWidget(plot)
+    plot.resize(600, 230)
+    plot.points = [FundingPoint('okx', plot.now - i * 1000, Decimal('0.0001'))
+                   for i in reversed(range(1000))]
+    original = FundingPlot.span.fget
+    accesses = []
+    def span(self):
+        accesses.append(1)
+        return original(self)
+    monkeypatch.setattr(FundingPlot, 'span', property(span))
+    plot.grab()
+    assert len(accesses) == 1
+
+
+def test_display_reduction_preserves_spikes_and_original_samples():
+    from okx_gui.funding_chart import render_points
+    points = [FundingPoint('okx', i * 1000, Decimal('0')) for i in range(1000)]
+    points[321] = FundingPoint('okx', 321000, Decimal('0.5'))
+    points[322] = FundingPoint('okx', 322000, Decimal('-0.5'))
+    reduced = render_points(points, 10)
+    assert len(reduced) <= 40
+    assert points[321] in reduced and points[322] in reduced
+    assert reduced[0] == points[0] and reduced[-1] == points[-1]
+    assert len(points) == 1000

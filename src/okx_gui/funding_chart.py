@@ -1,4 +1,5 @@
 """OKX live funding-rate curve."""
+from bisect import bisect_left
 from datetime import datetime
 import time
 from zoneinfo import ZoneInfo
@@ -12,6 +13,24 @@ from okx_gui.funding import EXCHANGES, RETENTION_MS, FundingStore, FundingWorker
 COLORS = {'okx': '#2679d8'}
 NAMES = {'okx': 'OKX'}
 ZONE = ZoneInfo('Asia/Shanghai')
+
+
+def render_points(points, width):
+    """Bound path size by pixels, retaining extrema and time order in each group."""
+    step = max(1, len(points) // max(1, int(width)))
+    if step == 1:
+        return points
+    result = []
+    for start in range(0, len(points), step):
+        group = points[start:start + step]
+        candidates = [group[0], min(group, key=lambda p: p.rate),
+                      max(group, key=lambda p: p.rate), group[-1]]
+        # Also retain gap edges so outages are not hidden by display reduction.
+        for previous, current in zip(group, group[1:]):
+            if current.timestamp - previous.timestamp > 5 * 60000:
+                candidates.extend((previous, current))
+        result.extend(sorted(set(candidates), key=lambda p: p.timestamp))
+    return result
 
 
 class FundingPlot(QWidget):
@@ -29,7 +48,7 @@ class FundingPlot(QWidget):
     def span(self):
         if self.manual_span is not None:
             return self.manual_span
-        earliest = min((point.timestamp for point in self.points), default=self.now)
+        earliest = self.points[0].timestamp if self.points else self.now
         return min(RETENTION_MS, max(3600000, self.now - earliest))
 
     def wheelEvent(self, event):
@@ -53,7 +72,11 @@ class FundingPlot(QWidget):
         painter.setFont(font)
         rect = QRectF(72, 24, max(1, self.width() - 88), max(1, self.height() - 66))
         self.plot_rect = rect
-        values = [float(point.rate * 100) for point in self.points]
+        span = self.span
+        start_index = max(0, bisect_left(self.points, self.now - span,
+                                       key=lambda point: point.timestamp) - 1)
+        visible_points = render_points(self.points[start_index:], rect.width())
+        values = [float(point.rate * 100) for point in visible_points]
         low, high = min(values + [0]), max(values + [0])
         padding = max((high - low) * 0.12, 0.001)
         low, high = low - padding, high + padding
@@ -65,21 +88,21 @@ class FundingPlot(QWidget):
             painter.setPen(QColor('#7b818a'))
             painter.drawText(QRectF(0, y - 9, 66, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:.4f}%')
         for i in range(5):
-            timestamp = self.now - self.span + self.span * i / 4
+            timestamp = self.now - span + span * i / 4
             label = datetime.fromtimestamp(timestamp / 1000, ZONE).strftime('%H:%M')
             x = rect.left() + i * rect.width() / 4
             painter.drawText(QRectF(x - 24, rect.bottom() + 4, 48, 34), Qt.AlignCenter, label)
         painter.save()
         painter.setClipRect(rect.adjusted(-2, -2, 2, 2))
         for exchange in EXCHANGES:
-            points = [point for point in self.points if point.exchange == exchange]
+            points = [point for point in visible_points if point.exchange == exchange]
             if not points:
                 continue
             path = QPainterPath()
             painter.setPen(QPen(QColor(COLORS[exchange]), 1.6))
             painter.setBrush(QColor(COLORS[exchange]))
             for i, point in enumerate(points):
-                x = rect.left() + (point.timestamp - self.now + self.span) / self.span * rect.width()
+                x = rect.left() + (point.timestamp - self.now + span) / span * rect.width()
                 y = rect.bottom() - (float(point.rate * 100) - low) / (high - low) * rect.height()
                 position = QPointF(x, y)
                 if i and point.timestamp - points[i - 1].timestamp <= 5 * 60000:
@@ -98,9 +121,11 @@ class FundingPlot(QWidget):
             timestamp = self.now - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
             lines = ['附近实时采样（北京时间）']
             for exchange in EXCHANGES:
-                points = [point for point in self.points if point.exchange == exchange]
+                points = self.points
                 if points:
-                    point = min(points, key=lambda point: abs(point.timestamp - timestamp))
+                    index = bisect_left(points, timestamp, key=lambda point: point.timestamp)
+                    nearby = points[max(0, index - 1):index + 1]
+                    point = min(nearby, key=lambda point: abs(point.timestamp - timestamp))
                     date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M:%S')
                     lines.append(f'{NAMES[exchange]}：{point.rate * 100:.6f}% · {date}')
             self.setToolTip('\n'.join(lines))
@@ -141,14 +166,36 @@ class FundingChart(QFrame):
         layout.addWidget(self.plot, 1)
         self.refresh()
         self.worker = FundingWorker(instrument, self.store.path, self)
-        self.worker.updated.connect(self.refresh)
+        self.worker.sampled.connect(self.append_sample)
         self.worker.status.connect(self.update_status)
         self.worker.start()
         self.update_status('okx', '加载中')
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(1000)
-        self.refresh_timer.timeout.connect(self.refresh)
+        self.refresh_timer.timeout.connect(self.advance_time)
         self.refresh_timer.start()
+
+    def append_sample(self, point):
+        if point.exchange not in EXCHANGES:
+            return
+        points = self.plot.points
+        if not points or point.timestamp > points[-1].timestamp:
+            points.append(point)
+        else:
+            index = bisect_left(points, point.timestamp, key=lambda item: item.timestamp)
+            if index < len(points) and points[index].timestamp == point.timestamp:
+                points[index] = point
+            else:
+                points.insert(index, point)
+        self.advance_time()
+
+    def advance_time(self):
+        self.plot.now = int(time.time() * 1000)
+        expired = bisect_left(self.plot.points, self.plot.now - RETENTION_MS,
+                              key=lambda point: point.timestamp)
+        if expired:
+            del self.plot.points[:expired]
+        self.plot.update()
 
     def refresh(self):
         self.plot.now = int(time.time() * 1000)

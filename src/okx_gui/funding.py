@@ -113,7 +113,7 @@ def funding_client_options():
 
 class FundingWorker(QThread):
     status = Signal(str, str)
-    updated = Signal()
+    sampled = Signal(object)
 
     def __init__(self, instrument, database_path, parent=None):
         super().__init__(parent)
@@ -154,7 +154,7 @@ class FundingWorker(QThread):
                         points = [point]
                         await asyncio.to_thread(store.save, self.instrument, points, now)
                         self.status.emit(exchange, f'{point.rate * 100:.6f}%' )
-                        self.updated.emit()
+                        self.sampled.emit(point)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
