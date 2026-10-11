@@ -139,3 +139,34 @@ def test_same_exchange_timestamp_keeps_separate_successful_samples(monkeypatch, 
     store = FundingStore(tmp_path / 'samples.sqlite3')
     store.save('BTC', points, 201000)
     assert [p.timestamp for p in store.load('BTC', 201000)] == [200000, 201000]
+
+
+def test_wheel_zoom_keeps_latest_time_and_survives_refresh(qtbot):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    plot = chart.plot
+    def wheel(delta):
+        event = QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(),
+                            QPoint(0, delta), Qt.NoButton, Qt.NoModifier,
+                            Qt.NoScrollPhase, False)
+        QApplication.sendEvent(plot, event)
+        assert event.isAccepted()
+    original = plot.span
+    wheel(120)
+    assert plot.span < original
+    zoomed = plot.span
+    chart.refresh()
+    assert plot.span == zoomed
+    wheel(-120)
+    assert abs(plot.span - original) <= 1
+    for _ in range(4):
+        wheel(2400)
+    assert plot.span == 60000
+    for _ in range(4):
+        wheel(-2400)
+    assert plot.span == RETENTION_MS
+    assert chart.shutdown()

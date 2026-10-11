@@ -20,14 +20,29 @@ class FundingPlot(QWidget):
         self.points = []
         self.now = int(time.time() * 1000)
         self.plot_rect = QRectF()
+        self.manual_span = None
         self.setMinimumHeight(180)
         self.setMouseTracking(True)
         self.setAccessibleName('OKX 实时资金费率曲线')
 
     @property
     def span(self):
+        if self.manual_span is not None:
+            return self.manual_span
         earliest = min((point.timestamp for point in self.points), default=self.now)
         return min(RETENTION_MS, max(3600000, self.now - earliest))
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if not delta:
+            event.ignore()
+            return
+        # Keep the latest time at the right edge, as new samples arrive.
+        steps = max(-20, min(20, delta / 120))
+        self.manual_span = max(60000, min(RETENTION_MS, int(self.span * 0.8 ** steps)))
+        self.setToolTip('')
+        self.update()
+        event.accept()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -109,7 +124,7 @@ class FundingChart(QFrame):
         heading = QHBoxLayout()
         title = QLabel('OKX 实时资金费率')
         title.setObjectName('muted')
-        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，最少显示1小时。')
+        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。')
         heading.addWidget(title)
         heading.addStretch()
         for exchange in EXCHANGES:
