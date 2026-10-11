@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(1380, 960)
+        self.resize(1380, 1600)
         self.setMinimumSize(1270, 650)
         self.setStyleSheet(STYLE)
         root = QWidget()
@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(self.trading_panel)
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([360, 450])
+        self.main_splitter.setSizes([1060, 500])
         handle = self.main_splitter.handle(1)
         handle.setCursor(Qt.SplitVCursor)
         self.setup_positions_panel()
@@ -547,6 +547,8 @@ class MainWindow(QMainWindow):
         total = sum(self.main_splitter.sizes())
         bottom_minimum = max(self.trading_panel.minimumHeight(), self.trading_panel.minimumSizeHint().height())
         desired = max(self.monitor_panel.minimumHeight(), rows_height + overhead)
+        if self.rows:
+            desired = max(desired, total - max(500, bottom_minimum))
         height = min(desired, max(self.monitor_panel.minimumHeight(), total - bottom_minimum))
         self.main_splitter.setSizes([height, total - height])
 

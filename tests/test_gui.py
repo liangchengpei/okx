@@ -590,6 +590,7 @@ def test_monitor_splitter_resizes_both_lower_panels(qtbot):
 def test_monitor_height_follows_contract_count(qtbot):
     window = make_window(qtbot)
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert abs(window.main_splitter.sizes()[1] - 500) <= 2
     initial = window.main_splitter.sizes()[0]
     assert window.add_contract('ETH-USDT-SWAP')
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
