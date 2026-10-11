@@ -64,7 +64,6 @@ class FundingPlot(QWidget):
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor('#7b818a'))
             painter.drawText(QRectF(0, y - 9, 66, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:.4f}%')
-        painter.drawText(QRectF(4, 0, 180, 20), Qt.AlignLeft, '实时资金费率（%）')
         for i in range(5):
             timestamp = self.now - self.span + self.span * i / 4
             label = datetime.fromtimestamp(timestamp / 1000, ZONE).strftime('%H:%M')
