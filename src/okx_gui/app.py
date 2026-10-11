@@ -98,6 +98,7 @@ class ContractRow(QFrame):
         self.name = QLabel(instrument)
         self.name.setStyleSheet("font-weight: 600;")
         self.ladder = None
+        self.emergency_triggered = False
         self.state = QLabel("未启动监控")
         self.state.setObjectName("muted")
         self.state.hide()
@@ -591,6 +592,7 @@ class MainWindow(QMainWindow):
             return
         self.show_error("")
         row.ladder = ladder
+        row.emergency_triggered = False
         row.high_input.setEnabled(False)
         row.low_input.setEnabled(False)
         row.step_input.setEnabled(False)
@@ -603,11 +605,13 @@ class MainWindow(QMainWindow):
         if row.price.text() != "--":
             self.process_voice(inst, row.price.text())
 
-    def stop_voice(self, inst):
+    def stop_voice(self, inst, *, clear_emergency=False):
         row = self.rows[inst]
         row.ladder = None
-        for button in row.emergency_buttons.values():
-            button.setChecked(False)
+        if clear_emergency or row.emergency_triggered:
+            for button in row.emergency_buttons.values():
+                button.setChecked(False)
+        row.emergency_triggered = False
         row.high_input.setEnabled(True)
         row.low_input.setEnabled(True)
         row.step_input.setEnabled(True)
@@ -645,6 +649,8 @@ class MainWindow(QMainWindow):
             row.voice_state.setText(self.range_voice_status(row.ladder))
 
         if side:
+            if row.emergency_buttons[side].isChecked():
+                row.emergency_triggered = True
             self.speech.trigger_emergency(inst, side)
 
     def speech_failed(self, message):
@@ -667,7 +673,7 @@ class MainWindow(QMainWindow):
             self.start_button.setEnabled(False)
             self.status_label.setText("正在停止行情…")
             for inst in self.rows:
-                self.stop_voice(inst)
+                self.stop_voice(inst, clear_emergency=True)
             self.worker.stop()
             return
         if not self.rows:
@@ -711,7 +717,7 @@ class MainWindow(QMainWindow):
 
     def market_stopped(self):
         for inst in self.rows:
-            self.stop_voice(inst)
+            self.stop_voice(inst, clear_emergency=True)
         worker = self.worker
         self.worker = None
         if worker:

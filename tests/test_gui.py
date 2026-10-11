@@ -692,3 +692,46 @@ def test_contract_panels_have_chart_space_and_reflow_after_removal(qtbot):
     window.remove_contract(btc.instrument)
     assert window.row_layout.getItemPosition(window.row_layout.indexOf(spcx))[:2] == (0, 0)
     assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (0, 1)
+
+
+def test_stop_voice_preserves_untriggered_emergency_and_restart_settings(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows['BTC-USDT-SWAP']
+    row.low_input.setText('100')
+    row.high_input.setText('200')
+    row.step_input.setText('10')
+    window.worker.ticker.emit(row.instrument, '150', None)
+    row.voice_button.click()
+    window.worker.ticker.emit(row.instrument, '160', None)  # Ordinary price speech is not an emergency.
+    assert not row.emergency_triggered
+    row.voice_button.click()
+    assert row.ladder is None
+    assert all(button.isChecked() for button in row.emergency_buttons.values())
+    assert all((row.instrument, side) in window.speech.emergency for side in ('low', 'high'))
+    assert row.instrument in window.speech.cancelled
+    row.voice_button.click()
+    assert row.ladder is not None
+    window.worker.ticker.emit(row.instrument, '201', None)
+    assert row.emergency_triggered
+    window.worker.ticker.emit(row.instrument, '150', None)
+    row.voice_button.click()
+    assert not any(button.isChecked() for button in row.emergency_buttons.values())
+    assert not row.emergency_triggered
+
+
+def test_crossing_disabled_emergency_bound_does_not_clear_enabled_bound_on_stop(qtbot):
+    window = make_window(qtbot)
+    window.toggle_market()
+    row = window.rows['BTC-USDT-SWAP']
+    row.low_input.setText('100')
+    row.high_input.setText('200')
+    row.step_input.setText('10')
+    row.emergency_buttons['high'].setChecked(False)
+    window.worker.ticker.emit(row.instrument, '150', None)
+    row.voice_button.click()
+    window.worker.ticker.emit(row.instrument, '201', None)
+    assert not row.emergency_triggered
+    row.voice_button.click()
+    assert row.emergency_buttons['low'].isChecked()
+    assert not row.emergency_buttons['high'].isChecked()
