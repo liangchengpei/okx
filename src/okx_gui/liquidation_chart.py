@@ -90,6 +90,7 @@ class SimulatedLiquidations:
 
 class CountPlot(QWidget):
     visible_count_changed = Signal(int)
+    bucket_hovered = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -166,13 +167,19 @@ class CountPlot(QWidget):
                 (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * len(self.buckets)
             ))
             bucket = self.buckets[index]
+            self.bucket_hovered.emit(bucket)
             start = datetime.fromtimestamp(bucket.start, DISPLAY_ZONE).strftime("%m-%d %H:%M")
             end = datetime.fromtimestamp(bucket.start + self.minutes * 60, DISPLAY_ZONE).strftime("%H:%M")
             self.setToolTip(f"{start}–{end}（北京时间）\nBybit（下段）：多头 {bucket.bybit_long} 条 · 空头 {bucket.bybit_short} 条\nOKX（上段）：多头 {bucket.okx_long} 条 · 空头 {bucket.okx_short} 条\n合计：多头 {bucket.long_count} 条 · 空头 {bucket.short_count} 条"
                             + ("\n当前区间尚未结束" if index == len(self.buckets) - 1 else ""))
         else:
             self.setToolTip("")
+            self.bucket_hovered.emit(None)
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.bucket_hovered.emit(None)
+        super().leaveEvent(event)
 
 
 class LiquidationChart(QFrame):
@@ -206,6 +213,16 @@ class LiquidationChart(QFrame):
         self.interval.setToolTip("切换周期使用同一组历史记录重新聚合；图内滚轮可横向缩放")
         controls.addWidget(self.interval)
         layout.addLayout(controls)
+        self.details = QLabel("最近爆仓：暂无 Bybit 记录")
+        self.details.setObjectName("muted")
+        self.details.setTextFormat(Qt.PlainText)
+        self.details.setWordWrap(False)
+        self.details.ensurePolished()
+        self.details.setFixedHeight(self.details.fontMetrics().lineSpacing() * 2 + 4)
+        self.details.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.details.setAccessibleName(f"{instrument} 爆仓详情")
+        self._latest = None
+        layout.addWidget(self.details)
         platform_legend = QLabel("下段深色：Bybit　上段：OKX（暂停预留）")
         platform_legend.setObjectName("muted")
         layout.addWidget(platform_legend)
@@ -236,7 +253,21 @@ class LiquidationChart(QFrame):
         records = self.source.records if self.simulated else self.store.load(self.instrument, "live", now, since=since) or []
         records = [record for record in records if record.exchange == "bybit"]
         self.plot.buckets = aggregate_records(records, self.plot.minutes, now, count=self.plot.visible_count)
+        self._latest = (max(records, key=lambda r: r.timestamp, default=None) if self.simulated else
+                        self.store.latest(self.instrument, "live", "bybit", now))
+        self.update_details()
         self.plot.update()
+
+    def update_details(self):
+        if self._latest:
+            record = self._latest
+            timestamp = datetime.fromtimestamp(record.timestamp, DISPLAY_ZONE).strftime("%m-%d %H:%M:%S")
+            side = "多头强平" if record.side == "long" else "空头强平"
+            base, quote, _ = self.instrument.split("-")
+            self.details.setText(f"最近爆仓 · Bybit · {side} · {timestamp}（北京时间）\n"
+                                 f"数量：{record.quantity or '--'} {base}　破产价：{record.price or '--'} {quote}")
+        else:
+            self.details.setText("最近爆仓：暂无 Bybit 记录")
 
     def simulate(self):
         self.source.advance(datetime.now(timezone.utc).timestamp())

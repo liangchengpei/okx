@@ -15,6 +15,8 @@ class LiquidationRecord:
     side: str
     event_id: str = field(default_factory=lambda: uuid4().hex)
     exchange: str = "okx"
+    quantity: str = ""
+    price: str = ""
 
 
 def default_database_path():
@@ -46,6 +48,10 @@ class LiquidationStore:
                     SELECT instrument, source, event_id, timestamp, side, {exchange_column}
                     FROM liquidation_records_legacy""")
                 db.execute("DROP TABLE liquidation_records_legacy")
+            current_columns = {row[1] for row in db.execute("PRAGMA table_info(liquidation_records)")}
+            for column in ("quantity", "price"):
+                if column not in current_columns:
+                    db.execute(f"ALTER TABLE liquidation_records ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             db.execute("""CREATE INDEX IF NOT EXISTS liquidation_time
                 ON liquidation_records(instrument, source, timestamp)""")
 
@@ -67,15 +73,23 @@ class LiquidationStore:
                                 (instrument, source)).fetchone()
             if not exists:
                 return None
-            rows = db.execute("""SELECT timestamp, side, event_id, exchange FROM liquidation_records
+            rows = db.execute("""SELECT timestamp, side, event_id, exchange, quantity, price FROM liquidation_records
                 WHERE instrument=? AND source=? AND timestamp<=? AND timestamp>=? ORDER BY timestamp, event_id""",
                               (instrument, source, now, max(now - HISTORY_SECONDS, since if since is not None else now - HISTORY_SECONDS))).fetchall()
         return [LiquidationRecord(*row) for row in rows]
 
+    def latest(self, instrument, source, exchange, now):
+        with self.connect() as db:
+            row = db.execute("""SELECT timestamp, side, event_id, exchange, quantity, price
+                FROM liquidation_records WHERE instrument=? AND source=? AND exchange=?
+                AND timestamp>=? AND timestamp<=? ORDER BY timestamp DESC, event_id DESC LIMIT 1""",
+                (instrument, source, exchange, now - HISTORY_SECONDS, now)).fetchone()
+        return LiquidationRecord(*row) if row else None
+
     def save(self, instrument, source, records, now):
         with self.connect() as db:
             db.execute("INSERT OR IGNORE INTO streams VALUES (?, ?)", (instrument, source))
-            db.executemany("""INSERT INTO liquidation_records VALUES (?, ?, ?, ?, ?, ?)
+            db.executemany("""INSERT INTO liquidation_records VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instrument, source, exchange, event_id) DO NOTHING""",
-                           [(instrument, source, r.event_id, r.timestamp, r.side, r.exchange) for r in records])
+                           [(instrument, source, r.event_id, r.timestamp, r.side, r.exchange, r.quantity, r.price) for r in records])
             db.execute("DELETE FROM liquidation_records WHERE timestamp < ?", (now - HISTORY_SECONDS,))

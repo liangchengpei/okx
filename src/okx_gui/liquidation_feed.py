@@ -44,7 +44,8 @@ def parse_liquidations(payload, exchange, instrument):
             occurrences[encoded] += 1
             identity = json.dumps([payload.get('ts'), encoded, occurrence])
             fingerprint = hashlib.sha256(identity.encode()).hexdigest()
-            result.append(LiquidationRecord(timestamp, side, fingerprint, 'bybit'))
+            result.append(LiquidationRecord(timestamp, side, fingerprint, 'bybit',
+                                            str(detail.get('v', '')), str(detail.get('p', ''))))
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             continue
     return result
