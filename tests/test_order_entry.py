@@ -226,3 +226,19 @@ def test_trigger_confirmation_displays_conditions(qtbot):
     assert '计划委托' in texts and '83000' in texts and '最新价' in texts
     assert '触发后委托' in texts and '市价' in texts
     dialog.close()
+
+
+def test_quantity_currency_tracks_contract_and_confirmation(qtbot):
+    from PySide6.QtWidgets import QLabel
+    widget = entry(qtbot)
+    assert widget.quantity_label.text() == '数量（BTC）'
+    widget.quantity.setText('0.02')
+    widget.price.setText('82600')
+    widget.preview('long')
+    dialog = widget.findChild(QDialog)
+    assert '0.02 BTC' in [label.text() for label in dialog.findChildren(QLabel)]
+    dialog.close()
+    widget.contract.setCurrentIndex(1)
+    assert widget.quantity_label.text() == '数量（SPCX）'
+    assert 'SPCX' in widget.quantity.placeholderText()
+    assert widget.quantity.text() == ''

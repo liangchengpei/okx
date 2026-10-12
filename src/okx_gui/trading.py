@@ -27,6 +27,7 @@ class PreparedOrder:
     position_mode: str
     client_id: str
     prepared_at: float = field(default_factory=time.monotonic)
+    contract_quantity: Decimal | None = None
 
     @property
     def environment(self):
@@ -65,10 +66,12 @@ def number(value, label):
 
 def order_parameters(prepared):
     draft = prepared.draft
+    if prepared.contract_quantity is None or prepared.contract_quantity <= 0:
+        raise TradingError('尚未确认币数对应的合约数量，请重新确认订单。')
     buy = (draft.direction == 'long') == (draft.action == 'open')
     params = dict(instId=draft.instrument, tdMode=draft.margin,
                   side='buy' if buy else 'sell', ordType=draft.order_type,
-                  sz=format(draft.quantity, 'f'), clOrdId=prepared.client_id,
+                  sz=format(prepared.contract_quantity, 'f'), clOrdId=prepared.client_id,
                   posSide=draft.direction if prepared.position_mode == 'long_short_mode' else 'net')
     if draft.order_type == 'trigger':
         params['algoClOrdId'] = params.pop('clOrdId')
@@ -99,14 +102,21 @@ def validate_with_account(account, draft, credentials):
         raise TradingError('合约不存在或当前不可交易。')
     lot = number(instrument.get('lotSz'), '数量步长')
     minimum = number(instrument.get('minSz'), '最小数量')
-    quantity = number(draft.quantity, '数量')
+    base = draft.instrument.split('-')[0]
+    if instrument.get('ctType') != 'linear' or instrument.get('ctValCcy') != base:
+        raise TradingError('该合约不支持固定币数换算，目前仅支持以标的币计价的正向合约。')
+    face = number(instrument.get('ctVal'), '合约面值') * number(instrument.get('ctMult') or '1', '合约乘数')
+    if face <= 0:
+        raise TradingError('无法确认合约面值，不能换算下单币数。')
+    coins = number(draft.quantity, '币数')
     if lot <= 0 or minimum <= 0:
         raise TradingError('无法确认合约数量规则。')
-    if quantity < minimum or quantity % lot != 0:
-        raise TradingError(f'数量至少为 {minimum} 张，且必须是 {lot} 张的整数倍。')
+    if coins < minimum * face or coins % (lot * face) != 0:
+        raise TradingError(f'数量至少为 {minimum * face:f} {base}，且必须是 {lot * face:f} {base} 的整数倍。')
+    quantity = coins / (lot * face) * lot
     maximum = instrument.get('maxLmtSz' if draft.price is not None else 'maxMktSz')
     if maximum and quantity > number(maximum, '最大委托数量'):
-        raise TradingError(f'数量超过单笔委托上限 {maximum} 张。')
+        raise TradingError(f"数量超过单笔委托上限 {number(maximum, '最大委托数量') * face:f} {base}。")
     if draft.order_type == 'limit' or (draft.order_type == 'trigger' and draft.price is not None):
         tick = number(instrument.get('tickSz'), '价格步长')
         price = number(draft.price, '价格')
@@ -121,7 +131,7 @@ def validate_with_account(account, draft, credentials):
             raise TradingError(f'触发价格必须大于0，且必须是 {tick} 的整数倍。')
         maximum_trigger = instrument.get('maxTriggerSz')
         if maximum_trigger and quantity > number(maximum_trigger, '计划委托数量上限'):
-            raise TradingError(f'数量超过计划委托上限 {maximum_trigger} 张。')
+            raise TradingError(f"数量超过计划委托上限 {number(maximum_trigger, '计划委托数量上限') * face:f} {base}。")
     if draft.action == 'open':
         leverage = number(draft.leverage, '杠杆')
         if leverage < 1 or leverage > number(instrument.get('lever'), '合约杠杆上限'):
@@ -137,13 +147,13 @@ def validate_with_account(account, draft, credentials):
             if belongs:
                 available += abs(number(p.get('availPos') or p.get('pos', '0'), '可平数量'))
         if quantity > available:
-            raise TradingError(f'所选方向和保证金模式的可平数量不足，当前最多 {available} 张。')
+            raise TradingError(f'所选方向和保证金模式的可平数量不足，当前最多 {available * face:f} {base}。')
     elif mode == 'net_mode':
         for p in matching:
             pos = number(p.get('pos', '0'), '持仓数量')
             if (draft.direction == 'long' and pos < 0) or (draft.direction == 'short' and pos > 0):
                 raise TradingError('单向持仓模式已有反向持仓，请先平仓再开仓。')
-    return mode
+    return mode, quantity
 
 
 def prepare_order(draft, credentials=None, account_factory=AccountAPI):
@@ -151,14 +161,14 @@ def prepare_order(draft, credentials=None, account_factory=AccountAPI):
     try:
         with account_factory(**options(credentials)) as account:
             account.timeout = httpx.Timeout(5)
-            mode = validate_with_account(account, draft, credentials)
+            mode, contract_quantity = validate_with_account(account, draft, credentials)
     except TradingError:
         raise
     except httpx.HTTPError:
         raise TradingError('订单校验网络异常，请稍后重试。') from None
     except Exception:
         raise TradingError('订单校验失败，请检查账户与连接。') from None
-    return PreparedOrder(draft, credentials, mode, 'gui' + uuid.uuid4().hex[:29])
+    return PreparedOrder(draft, credentials, mode, 'gui' + uuid.uuid4().hex[:29], contract_quantity=contract_quantity)
 
 
 def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, credentials_loader=load_credentials):
@@ -171,9 +181,11 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
     try:
         with account_factory(**options(credentials)) as account:
             account.timeout = httpx.Timeout(5)
-            mode = validate_with_account(account, draft, credentials)
+            mode, contract_quantity = validate_with_account(account, draft, credentials)
             if mode != prepared.position_mode:
                 raise TradingError('持仓模式已更改，请重新确认订单。')
+            if contract_quantity != prepared.contract_quantity:
+                raise TradingError('合约面值或数量规则已更改，请重新确认订单。')
             if draft.action == 'open':
                 params = dict(instId=draft.instrument, lever=str(draft.leverage), mgnMode=draft.margin)
                 if draft.margin == 'isolated' and mode == 'long_short_mode':

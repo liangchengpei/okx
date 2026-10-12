@@ -31,6 +31,7 @@ class Account:
         return ok([{'acctLv': '2', 'posMode': self.mode}])
     def get_instruments(self, **kwargs):
         return ok([{'instId': DRAFT.instrument, 'state': 'live', 'lotSz': '1', 'minSz': '1',
+                    'ctType': 'linear', 'ctValCcy': 'BTC', 'ctVal': '1', 'ctMult': '1',
                     'tickSz': '0.1', 'lever': '100', 'maxLmtSz': '100', 'maxMktSz': '50'}])
     def get_positions(self, **kwargs):
         return ok(self.positions)
@@ -79,7 +80,7 @@ def submit(prepared):
                                                  ('close','long','sell'), ('close','short','buy')])
 def test_order_side_mapping_and_reduce_only(mode, action, direction, side):
     draft = replace(DRAFT, action=action, direction=direction)
-    params = order_parameters(PreparedOrder(draft, CREDS, mode, 'gui123'))
+    params = order_parameters(PreparedOrder(draft, CREDS, mode, 'gui123', contract_quantity=draft.quantity))
     assert params['side'] == side
     assert params['posSide'] == ('net' if mode == 'net_mode' else direction)
     assert params.get('reduceOnly', False) == (mode == 'net_mode' and action == 'close')
@@ -207,7 +208,7 @@ def test_leverage_rules_read_contract_ceiling_and_existing_setting():
 @pytest.mark.parametrize('price', [None, Decimal('83001')])
 def test_trigger_parameters_use_algo_client_id_and_market_sentinel(price):
     draft = replace(DRAFT, order_type='trigger', trigger_price=Decimal('83000'), price=price, trigger_source='mark')
-    prepared = PreparedOrder(draft, CREDS, 'net_mode', 'guiTrigger123')
+    prepared = PreparedOrder(draft, CREDS, 'net_mode', 'guiTrigger123', contract_quantity=draft.quantity)
     params = order_parameters(prepared)
     assert params['ordType'] == 'trigger'
     assert params['triggerPx'] == '83000' and params['triggerPxType'] == 'mark'
@@ -242,3 +243,77 @@ def test_trigger_uses_algo_send_and_reconciliation(timeout):
     assert [name for name, _ in calls] == (['send','lookup'] if timeout else ['send'])
     if timeout:
         assert calls[1][1] == {'algoClOrdId':prepared.client_id}
+
+
+class CoinAccount(Account):
+    face = '0.01'
+    multiplier = '1'
+    def get_instruments(self, **kwargs):
+        result = super().get_instruments(**kwargs)
+        result['data'][0].update(ctVal=self.face, ctMult=self.multiplier)
+        return result
+
+
+@pytest.mark.parametrize('order_type,price', [('limit', Decimal('82600.1')), ('market', None), ('trigger', None)])
+def test_coin_quantity_converted_for_all_order_types(order_type, price):
+    draft = replace(DRAFT, quantity=Decimal('0.02'), order_type=order_type,
+                    price=price, trigger_price=Decimal('83000'))
+    prepared = prepare_order(draft, CREDS, CoinAccount)
+    assert prepared.draft.quantity == Decimal('0.02')
+    assert prepared.contract_quantity == Decimal('2')
+    assert order_parameters(prepared)['sz'] == '2'
+    if order_type != 'trigger':
+        submit_order(prepared, CoinAccount, Trade, lambda: CREDS)
+        assert Trade.calls[0]['sz'] == '2'
+
+
+@pytest.mark.parametrize('coins', ['0.005', '0.015', '1.01'])
+def test_invalid_coin_quantity_not_rounded_or_sent(coins):
+    with pytest.raises(TradingError, match='BTC'):
+        prepare_order(replace(DRAFT, quantity=Decimal(coins)), CREDS, CoinAccount)
+    assert not Trade.calls and not Account.calls
+
+
+def test_close_quantity_and_available_quantity_are_converted():
+    Account.positions = [{'instId':DRAFT.instrument, 'mgnMode':'cross', 'posSide':'long',
+                          'pos':'3', 'availPos':'2'}]
+    draft = replace(DRAFT, action='close', quantity=Decimal('0.03'))
+    with pytest.raises(TradingError, match='0.02 BTC'):
+        prepare_order(draft, CREDS, CoinAccount)
+    prepared = prepare_order(replace(draft, quantity=Decimal('0.02')), CREDS, CoinAccount)
+    submit_order(prepared, CoinAccount, Trade, lambda: CREDS)
+    assert Trade.calls[0]['sz'] == '2' and not Account.calls
+
+
+def test_changed_face_blocks_submission_before_leverage(monkeypatch):
+    prepared = prepare_order(replace(DRAFT, quantity=Decimal('0.02')), CREDS, CoinAccount)
+    monkeypatch.setattr(CoinAccount, 'face', '0.02')
+    with pytest.raises(TradingError, match='合约面值'):
+        submit_order(prepared, CoinAccount, Trade, lambda: CREDS)
+    assert not Trade.calls and not Account.calls
+
+
+@pytest.mark.parametrize('metadata', [ {'ctVal':''}, {'ctVal':'0'}, {'ctMult':'-1'},
+                                      {'ctType':'inverse', 'ctValCcy':'USD'}, {'ctValCcy':''}])
+def test_unknown_or_unsupported_face_never_sends(monkeypatch, metadata):
+    original = Account.get_instruments
+    def instruments(self, **kwargs):
+        result = original(self, **kwargs)
+        result['data'][0].update(metadata)
+        return result
+    monkeypatch.setattr(Account, 'get_instruments', instruments)
+    with pytest.raises(TradingError):
+        prepare_order(DRAFT, CREDS, Account)
+    assert not Account.calls and not Trade.calls
+
+
+def test_multiplier_and_fractional_contract_step(monkeypatch):
+    original = CoinAccount.get_instruments
+    def instruments(self, **kwargs):
+        result = original(self, **kwargs)
+        result['data'][0].update(ctMult='10', lotSz='0.1', minSz='0.1')
+        return result
+    monkeypatch.setattr(CoinAccount, 'get_instruments', instruments)
+    prepared = prepare_order(replace(DRAFT, quantity=Decimal('0.03')), CREDS, CoinAccount)
+    assert prepared.contract_quantity == Decimal('0.3')
+    assert order_parameters(prepared)['sz'] == '0.3'

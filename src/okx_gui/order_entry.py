@@ -130,10 +130,11 @@ class OrderEntry(QWidget):
         price_layout.addWidget(self.latest)
         form.addRow('价格', price_row)
         self.quantity = QLineEdit()
-        self.quantity.setPlaceholderText('输入数量（张）')
-        self.quantity.setAccessibleName('委托数量（张）')
+        self.quantity.setPlaceholderText('输入币数')
+        self.quantity.setAccessibleName('委托数量（币）')
         self.quantity.setStyleSheet('padding: 8px;')
-        form.addRow('数量（张）', self.quantity)
+        self.quantity_label = QLabel('数量（币）')
+        form.addRow(self.quantity_label, self.quantity)
         layout.addLayout(form)
         self.error = QLabel()
         self.error.setObjectName('error')
@@ -278,6 +279,10 @@ class OrderEntry(QWidget):
                 (self.order_type.currentIndex() == 2 and self.execution_type.currentIndex() == 0))
 
     def update_form(self):
+        unit = self.contract.currentText().split('-')[0] or '币'
+        self.quantity_label.setText(f'数量（{unit}）')
+        self.quantity.setPlaceholderText(f'输入数量（{unit}）')
+        self.quantity.setAccessibleName(f'委托数量（{unit}）')
         opening = self.action.currentIndex() == 0
         self.buy.setText(('开多' if opening else '平多') if self.trading else ('预览开多' if opening else '预览平多'))
         self.sell.setText(('开空' if opening else '平空') if self.trading else ('预览开空' if opening else '预览平空'))
@@ -345,7 +350,7 @@ class OrderEntry(QWidget):
                              ('杠杆', f'{draft.leverage} ×' if draft.action == 'open' else '沿用现有持仓'),
                              ('委托类型', {'limit': '限价', 'market': '市价', 'trigger': '计划委托'}[draft.order_type]),
                              ('价格', str(draft.price) if draft.price is not None else '市场价格'),
-                             ('数量', f'{draft.quantity} 张')]:
+                             ('数量', f'{draft.quantity} {draft.instrument.split("-")[0]}')]:
             form.addRow(label, QLabel(value))
         if draft.order_type == 'trigger':
             form.addRow('触发价格', QLabel(str(draft.trigger_price)))
