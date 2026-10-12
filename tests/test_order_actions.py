@@ -213,3 +213,17 @@ def test_failed_amendment_keeps_editor_open(qtbot, monkeypatch):
     assert dialog.message.text() == '修改被拒绝'
     assert dialog.inputs['newPx'][0].text() == '83000'
     dialog.reject()
+
+
+def test_cancel_dialog_closes_after_success(qtbot, monkeypatch):
+    calls = []
+    monkeypatch.setattr('okx_gui.order_action_dialog.perform_order_action', lambda *args: calls.append(args) or '撤单请求已受理')
+    card = OrderCard(setup_order())
+    qtbot.addWidget(card)
+    dialog = OrderActionDialog(card.order, 'cancel', card)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert not calls
+    with qtbot.waitSignal(dialog.accepted):
+        dialog.confirm.click()
+    assert len(calls) == 1 and calls[0][1] == 'cancel'

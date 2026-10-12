@@ -2,11 +2,12 @@
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import time
+import hashlib
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QSettings
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QTabBar, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QStyle, QTabBar, QVBoxLayout, QWidget,
 )
 
 
@@ -37,9 +38,10 @@ class OrderDraft:
 class OrderEntry(QWidget):
     submitted = Signal(str)
 
-    def __init__(self, parent=None, *, trading=False):
+    def __init__(self, parent=None, *, trading=False, confirmation_settings=None):
         super().__init__(parent)
         self.trading = trading
+        self.confirmation_settings = confirmation_settings if confirmation_settings is not None else QSettings("okx-trader", "order-confirmation")
         self.busy = False
         self.blocked = False
         self.task = None
@@ -143,7 +145,18 @@ class OrderEntry(QWidget):
         layout.addWidget(self.error)
         self.note = QLabel('仅预览，不发送订单')
         self.note.setObjectName('muted')
-        layout.addWidget(self.note)
+        note_row = QHBoxLayout()
+        note_row.addWidget(self.note, 1)
+        self.restore_confirmation = QPushButton()
+        self.restore_confirmation.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.restore_confirmation.setFixedSize(28, 28)
+        self.restore_confirmation.setStyleSheet('padding: 0; border-radius: 4px;')
+        self.restore_confirmation.setToolTip('恢复下单确认')
+        self.restore_confirmation.setAccessibleName('恢复下单确认')
+        self.restore_confirmation.setVisible(trading)
+        self.restore_confirmation.clicked.connect(self.reset_confirmation)
+        note_row.addWidget(self.restore_confirmation)
+        layout.addLayout(note_row)
         self.unlock = QPushButton('核对订单后解除锁定')
         self.unlock.hide()
         self.unlock.clicked.connect(self.unlock_submission)
@@ -296,7 +309,7 @@ class OrderEntry(QWidget):
         self.price.setPlaceholderText('委托价格' if limit else '按市场价格成交')
         self.refresh_quote()
         if self.trading:
-            self.note.setText('发送前确认订单及交易环境')
+            self.note.setText('点击下单后校验交易规则')
             self.leverage.setToolTip('确认开仓时设置账户杠杆；平仓不修改杠杆')
         self.leverage.setEnabled(opening and self.loaded_rules_key == self.current_rules_key())
         if not self.busy and not self.blocked:
@@ -332,9 +345,26 @@ class OrderEntry(QWidget):
             if self.busy or self.blocked:
                 return
             from okx_gui.trading import prepare_order
-            self.start_task(lambda: prepare_order(draft), self.show_confirmation)
+            self.start_task(lambda: prepare_order(draft), self.order_prepared)
             return
         self.show_confirmation(None, draft)
+
+    def confirmation_key(self, prepared):
+        credentials = prepared.credentials
+        identity = f'{credentials.domain}|{credentials.flag}|{credentials.api_key}'
+        return 'skip/' + hashlib.sha256(identity.encode()).hexdigest()
+
+    def reset_confirmation(self):
+        self.confirmation_settings.remove('skip')
+        self.confirmation_settings.sync()
+        self.note.setText('已恢复下单确认')
+
+    def order_prepared(self, prepared):
+        if self.confirmation_settings.value(self.confirmation_key(prepared), False, type=bool):
+            from okx_gui.trading import submit_order
+            self.start_task(lambda: submit_order(prepared), self.order_sent)
+        else:
+            self.show_confirmation(prepared)
 
     def show_confirmation(self, prepared, draft=None):
         draft = prepared.draft if prepared is not None else draft
@@ -369,12 +399,18 @@ class OrderEntry(QWidget):
         layout.addWidget(note)
         close = QDialogButtonBox(QDialogButtonBox.Cancel if prepared is not None else QDialogButtonBox.Close)
         if prepared is not None:
+            skip = QCheckBox('不再提示')
+            skip.setToolTip('记住此账户及交易环境的选择，后续点击下单将直接发送；可在下单区恢复确认。')
+            layout.addWidget(skip)
             confirm = close.addButton('确认发送 · ' + prepared.environment, QDialogButtonBox.AcceptRole)
             def send():
                 if self.busy or self.blocked:
                     return
                 from okx_gui.trading import submit_order
                 confirm.setEnabled(False)
+                if skip.isChecked():
+                    self.confirmation_settings.setValue(self.confirmation_key(prepared), True)
+                    self.confirmation_settings.sync()
                 dialog.accept()
                 self.start_task(lambda: submit_order(prepared), self.order_sent)
             confirm.clicked.connect(send)
@@ -391,7 +427,8 @@ class OrderEntry(QWidget):
         self.note.setText('正在处理订单…')
         task = TradingTask(operation, self)
         self.task = task
-        task.completed.connect(completed)
+        result = []
+        task.completed.connect(lambda value: result.append(value))
         task.failed.connect(self.order_failed)
         def finished():
             if self.task is task:
@@ -399,8 +436,10 @@ class OrderEntry(QWidget):
                 self.busy = False
                 self.buy.setEnabled(bool(self.contract.currentText()) and not self.blocked)
                 self.sell.setEnabled(bool(self.contract.currentText()) and not self.blocked)
-                self.note.setText('发送前确认订单及交易环境')
+                self.note.setText('点击下单后校验交易规则')
             task.deleteLater()
+            if result:
+                completed(result[0])
         task.finished.connect(finished)
         task.start()
 

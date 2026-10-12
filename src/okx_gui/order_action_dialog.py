@@ -90,7 +90,7 @@ class OrderActionDialog(QDialog):
             self.task = None
             self.buttons.setEnabled(not self.uncertain)
             task.deleteLater()
-            if self.succeeded and self.action == 'amend':
+            if self.succeeded:
                 self.accept()
         task.finished.connect(finished)
         task.start()

@@ -242,3 +242,80 @@ def test_quantity_currency_tracks_contract_and_confirmation(qtbot):
     assert widget.quantity_label.text() == '数量（SPCX）'
     assert 'SPCX' in widget.quantity.placeholderText()
     assert widget.quantity.text() == ''
+
+
+def test_skip_confirmation_persists_and_can_be_restored(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QCheckBox, QPushButton
+    from okx_gui.positions import Credentials
+    from okx_gui.trading import PreparedOrder
+    settings = QSettings(str(tmp_path / 'confirmation.ini'), QSettings.IniFormat)
+    widget = OrderEntry(trading=True, confirmation_settings=settings)
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.price.setText('82600')
+    calls = []
+    credentials = [Credentials('test', 'secret', 'phrase', '1')]
+    def prepare(draft):
+        calls.append('prepare')
+        return PreparedOrder(draft, credentials[0], 'net_mode', 'gui123')
+    def send(prepared):
+        calls.append('send')
+        return '123'
+    monkeypatch.setattr('okx_gui.trading.prepare_order', prepare)
+    monkeypatch.setattr('okx_gui.trading.submit_order', send)
+    widget.quantity.setText('1')
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    dialog = next(d for d in widget.findChildren(QDialog) if d.isVisible())
+    dialog.findChild(QCheckBox).setChecked(True)
+    confirm = next(b for b in dialog.findChildren(QPushButton) if b.text().startswith('确认发送'))
+    with qtbot.waitSignal(widget.submitted):
+        confirm.click()
+    qtbot.waitUntil(lambda: not widget.busy)
+    assert calls == ['prepare', 'send']
+    widget.confirmation_settings = QSettings(str(tmp_path / 'confirmation.ini'), QSettings.IniFormat)
+    widget.quantity.setText('1')
+    with qtbot.waitSignal(widget.submitted):
+        widget.preview('long')
+        widget.preview('long')  # Busy guard prevents a second submission.
+    qtbot.waitUntil(lambda: not widget.busy)
+    assert calls == ['prepare', 'send', 'prepare', 'send']
+    assert not any(d.isVisible() for d in widget.findChildren(QDialog))
+    credentials[0] = Credentials('test', 'secret', 'phrase', '0')
+    widget.quantity.setText('1')
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    dialog = next(d for d in widget.findChildren(QDialog) if d.isVisible())
+    assert '实盘' in dialog.windowTitle()
+    dialog.reject()
+    widget.restore_confirmation.click()
+    assert not settings.allKeys()
+    credentials[0] = Credentials('test', 'secret', 'phrase', '1')
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    dialog = next(d for d in widget.findChildren(QDialog) if d.isVisible())
+    dialog.reject()
+    assert calls.count('send') == 2
+
+
+def test_cancel_does_not_save_skip_preference(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QCheckBox
+    from okx_gui.positions import Credentials
+    from okx_gui.trading import PreparedOrder
+    settings = QSettings(str(tmp_path / 'confirmation.ini'), QSettings.IniFormat)
+    widget = OrderEntry(trading=True, confirmation_settings=settings)
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.quantity.setText('1')
+    widget.price.setText('82600')
+    monkeypatch.setattr('okx_gui.trading.prepare_order', lambda draft: PreparedOrder(
+        draft, Credentials('test', 'secret', 'phrase', '1'), 'net_mode', 'gui123'))
+    monkeypatch.setattr('okx_gui.trading.submit_order', lambda _: pytest.fail('Must not send'))
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    dialog = next(d for d in widget.findChildren(QDialog) if d.isVisible())
+    dialog.findChild(QCheckBox).setChecked(True)
+    dialog.reject()
+    assert not settings.allKeys()
