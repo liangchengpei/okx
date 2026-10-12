@@ -115,11 +115,29 @@ def test_close_checks_available_position_and_does_not_set_leverage():
     assert 'px' not in Trade.calls[0]
 
 
-def test_net_mode_blocks_opening_against_existing_position():
-    Account.mode = 'net_mode'
-    Account.positions = [{'instId':DRAFT.instrument,'mgnMode':'cross','posSide':'net','pos':'-2'}]
-    with pytest.raises(TradingError, match='反向持仓'):
-        prepare_order(DRAFT, CREDS, Account)
+@pytest.mark.parametrize('mode', ['net_mode', 'long_short_mode'])
+@pytest.mark.parametrize('direction,position,side', [('long', '-2', 'buy'), ('short', '2', 'sell')])
+@pytest.mark.parametrize('quantity', ['1', '2', '3'])
+@pytest.mark.parametrize('order_type', ['limit', 'market', 'trigger'])
+def test_opposite_orders_allowed_with_existing_position(mode, direction, position, side, quantity, order_type):
+    Account.mode = mode
+    Account.positions = [{'instId':DRAFT.instrument, 'mgnMode':'cross',
+                          'posSide': 'net' if mode == 'net_mode' else ('short' if direction == 'long' else 'long'),
+                          'pos':position}]
+    draft = replace(DRAFT, direction=direction, quantity=Decimal(quantity), order_type=order_type,
+                    price=None if order_type == 'market' else DRAFT.price, trigger_price=Decimal('83000'))
+    prepared = prepare_order(draft, CREDS, Account)
+    class AllTrade(Trade):
+        def place_algo_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return ok([{'sCode':'0', 'algoId':'123'}])
+    assert submit_order(prepared, Account, AllTrade, lambda: CREDS) == '123'
+    assert len(Trade.calls) == 1
+    params = Trade.calls[0]
+    assert params['side'] == side
+    assert params['posSide'] == ('net' if mode == 'net_mode' else direction)
+    assert not params.get('reduceOnly', False)
+    assert Decimal(params['sz']) == Decimal(quantity)
 
 
 def test_changed_environment_blocks_before_mutations():

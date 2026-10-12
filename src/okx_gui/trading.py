@@ -148,11 +148,6 @@ def validate_with_account(account, draft, credentials):
                 available += abs(number(p.get('availPos') or p.get('pos', '0'), '可平数量'))
         if quantity > available:
             raise TradingError(f'所选方向和保证金模式的可平数量不足，当前最多 {available * face:f} {base}。')
-    elif mode == 'net_mode':
-        for p in matching:
-            pos = number(p.get('pos', '0'), '持仓数量')
-            if (draft.direction == 'long' and pos < 0) or (draft.direction == 'short' and pos > 0):
-                raise TradingError('单向持仓模式已有反向持仓，请先平仓再开仓。')
     return mode, quantity
 
 

@@ -394,6 +394,8 @@ class OrderEntry(QWidget):
         note = QLabel(('确认后发送至 OKX ' + prepared.environment + '。' +
                        ('开仓将按所选倍数设置账户杠杆。' if draft.action == 'open' else '仅平仓，不修改杠杆。'))
                       if prepared is not None else '本次仅预览，不发送订单。')
+        if prepared is not None and draft.action == 'open' and prepared.position_mode == 'net_mode':
+            note.setText(note.text() + '单向持仓模式：反向成交先抵扣原持仓，超出部分建立反向仓位。')
         note.setWordWrap(True)
         note.setObjectName('muted')
         layout.addWidget(note)
