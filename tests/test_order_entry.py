@@ -342,3 +342,56 @@ def test_preflight_parameters_visible_before_sending(qtbot, monkeypatch, tmp_pat
     assert 'posSide=net' in text and 'side=buy' in text and 'px=82000' in text
     assert 'USDT 可用权益 0' in text
     widget.findChild(QDialog).reject()
+
+
+def test_relay_form_selects_parent_and_emits_limit_or_market_draft(qtbot):
+    from okx_gui.relay import RelayParent
+    from okx_gui.positions import Credentials
+    widget = entry(qtbot)
+    parent = RelayParent('relay','relay-test','BTC-USDT-SWAP','接力测试',Credentials('k','s','p','1'))
+    widget.set_relay_parents([parent])
+    widget.order_type.setCurrentText('接力委托')
+    widget.relay_parent.setCurrentIndex(1)
+    widget.quantity.setText('0.1')
+    widget.price.setText('82000')
+    with qtbot.waitSignal(widget.relay_requested) as result:
+        widget.preview('short')
+    assert result.args[0].order_type == 'limit'
+    assert result.args[0].direction == 'short'
+    assert result.args[1] == parent
+    widget.execution_type.setCurrentText('市价')
+    assert widget.build_draft('long').price is None
+    assert widget.build_draft('long').order_type == 'market'
+    widget.set_relay_parents([parent])
+    assert widget.relay_parent.currentData() == parent
+    widget.set_relay_parents([])
+    widget.preview('long')
+    assert '请选择有效的前置委托' in widget.error.text()
+
+
+@pytest.mark.parametrize('execution,price', [('限价', Decimal('82000')), ('市价', None)])
+def test_relay_can_create_plan_order(qtbot, execution, price):
+    from okx_gui.relay import RelayParent
+    from okx_gui.positions import Credentials
+    widget = entry(qtbot)
+    parent = RelayParent('order', 'parent', 'BTC-USDT-SWAP', '前置单', Credentials('k','s','p','1'))
+    widget.set_relay_parents([parent])
+    widget.order_type.setCurrentText('接力委托')
+    widget.relay_parent.setCurrentIndex(1)
+    widget.relay_type.setCurrentText('计划委托')
+    assert not widget.trigger_price.isHidden()
+    widget.quantity.setText('0.1')
+    widget.price.setText('82000')
+    widget.trigger_price.setText('82100')
+    widget.trigger_source.setCurrentIndex(1)
+    widget.execution_type.setCurrentText(execution)
+    with qtbot.waitSignal(widget.relay_requested) as result:
+        widget.preview('long')
+    draft = result.args[0]
+    assert draft.order_type == 'trigger'
+    assert draft.trigger_price == Decimal('82100')
+    assert draft.trigger_source == 'mark'
+    assert draft.price == price
+    widget.trigger_price.clear()
+    widget.preview('long')
+    assert not widget.error.isHidden()

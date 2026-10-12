@@ -34,7 +34,11 @@ class OrderCard(QFrame):
         if order.state == '撤单处理中':
             self.modify.setEnabled(False)
             self.cancel.setEnabled(False)
-        if order.state in ('已受理，待同步', '撤单处理中'):
+        if order.raw.get('_relay'):
+            self.modify.setEnabled(False)
+            self.cancel.setText('取消接力')
+            self.cancel.setEnabled(order.raw.get('relay_state') == 'waiting')
+        if order.raw.get('_relay') or order.state in ('已受理，待同步', '撤单处理中'):
             layout.addWidget(PositionCard.label(order.state, 'positionCaption'))
         badges = QHBoxLayout()
         badges.setSpacing(4)
@@ -58,6 +62,8 @@ class OrderCard(QFrame):
             cell.setSpacing(4)
             cell.addWidget(PositionCard.label(caption, 'positionCaption', right=index % 3 == 2))
             value = PositionCard.label(text, 'positionValue', right=index % 3 == 2)
+            if order.raw.get('_relay'):
+                value.setWordWrap(True)
             value.setToolTip(raw)
             self.values[caption] = value
             cell.addWidget(value)

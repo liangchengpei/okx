@@ -39,12 +39,14 @@ class OrderDraft:
 class OrderEntry(QWidget):
     submitted = Signal(str)
     accepted_order = Signal(object, str)
+    relay_requested = Signal(object, object)
 
     def __init__(self, parent=None, *, trading=False, confirmation_settings=None):
         super().__init__(parent)
         self.trading = trading
         self.confirmation_settings = confirmation_settings if confirmation_settings is not None else QSettings("okx-trader", "order-confirmation")
         self.busy = False
+        self.external_busy = False
         self.blocked = False
         self.task = None
         self.rules_task = None
@@ -102,9 +104,12 @@ class OrderEntry(QWidget):
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         form.setVerticalSpacing(10)
         self.order_type = QComboBox()
-        self.order_type.addItems(['限价', '市价', '计划委托'])
+        self.order_type.addItems(['限价', '市价', '计划委托', '接力委托'])
         form.addRow('委托类型', self.order_type)
         self.entry_form = form
+        self.relay_type = QComboBox()
+        self.relay_type.addItems(['普通委托', '计划委托'])
+        form.addRow('接力订单类型', self.relay_type)
         self.trigger_price = QLineEdit()
         self.trigger_price.setPlaceholderText('触发价格')
         self.trigger_price.setAccessibleName('计划委托触发价格')
@@ -117,6 +122,11 @@ class OrderEntry(QWidget):
         self.execution_type = QComboBox()
         self.execution_type.addItems(['限价', '市价'])
         form.addRow('触发后委托', self.execution_type)
+        self.relay_parent = QComboBox()
+        self.relay_parent.setMinimumContentsLength(12)
+        self.relay_parent.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.relay_parent.setToolTip('选择普通、计划/止盈止损或本地接力委托；仅完全成交后触发。退出软件取消未触发接力。')
+        form.addRow('前置委托', self.relay_parent)
         price_row = QWidget()
         price_layout = QHBoxLayout(price_row)
         price_layout.setContentsMargins(0, 0, 0, 0)
@@ -181,6 +191,7 @@ class OrderEntry(QWidget):
         self.action.currentChanged.connect(self.update_form)
         self.order_type.currentIndexChanged.connect(self.update_form)
         self.execution_type.currentIndexChanged.connect(self.update_form)
+        self.relay_type.currentIndexChanged.connect(self.update_form)
         self.contract.currentTextChanged.connect(self.contract_changed)
         self.margin.currentIndexChanged.connect(self.load_leverage)
         self.quote_timer = QTimer(self)
@@ -294,9 +305,13 @@ class OrderEntry(QWidget):
         if price is not None:
             self.price.setText(str(price))
 
+    def uses_trigger(self):
+        return self.order_type.currentIndex() == 2 or (
+            self.order_type.currentIndex() == 3 and self.relay_type.currentIndex() == 1)
+
     def uses_limit_price(self):
         return (self.order_type.currentIndex() == 0 or
-                (self.order_type.currentIndex() == 2 and self.execution_type.currentIndex() == 0))
+                (self.order_type.currentIndex() in (2, 3) and self.execution_type.currentIndex() == 0))
 
     def update_form(self):
         unit = self.contract.currentText().split('-')[0] or '币'
@@ -306,11 +321,17 @@ class OrderEntry(QWidget):
         opening = self.action.currentIndex() == 0
         self.buy.setText(('开多' if opening else '平多') if self.trading else ('预览开多' if opening else '预览平多'))
         self.sell.setText(('开空' if opening else '平空') if self.trading else ('预览开空' if opening else '预览平空'))
-        self.buy.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
-        self.sell.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
-        trigger = self.order_type.currentIndex() == 2
-        for widget in (self.trigger_price, self.trigger_source, self.execution_type):
+        self.buy.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.external_busy and not self.blocked)
+        self.sell.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.external_busy and not self.blocked)
+        if self.order_type.currentIndex() == 3:
+            self.buy.setText('创建' + ('开多' if opening else '平多') + '接力')
+            self.sell.setText('创建' + ('开空' if opening else '平空') + '接力')
+        trigger = self.uses_trigger()
+        self.entry_form.setRowVisible(self.relay_type, self.order_type.currentIndex() == 3)
+        for widget in (self.trigger_price, self.trigger_source):
             self.entry_form.setRowVisible(widget, trigger)
+        self.entry_form.setRowVisible(self.execution_type, self.order_type.currentIndex() in (2, 3))
+        self.entry_form.setRowVisible(self.relay_parent, self.order_type.currentIndex() == 3)
         limit = self.uses_limit_price()
         self.price.setEnabled(limit)
         self.price.setPlaceholderText('委托价格' if limit else '按市场价格成交')
@@ -329,7 +350,7 @@ class OrderEntry(QWidget):
             raise ValueError('请选择有效方向。')
         quantity = amount(self.quantity.text(), '数量')
         price = amount(self.price.text(), '价格') if self.uses_limit_price() else None
-        trigger = amount(self.trigger_price.text(), '触发价格') if self.order_type.currentIndex() == 2 else None
+        trigger = amount(self.trigger_price.text(), '触发价格') if self.uses_trigger() else None
         if self.action.currentIndex() == 0 and (self.loaded_rules_key != self.current_rules_key() or self.leverage.currentData() is None):
             raise ValueError('请先成功读取该合约的杠杆规则，再选择倍数。')
         return OrderDraft(self.contract.currentText(), 'open' if self.action.currentIndex() == 0 else 'close',
@@ -339,7 +360,7 @@ class OrderEntry(QWidget):
                           quantity, price, trigger, self.trigger_source.currentData())
 
     def preview(self, direction):
-        if self.trading and (self.busy or self.blocked):
+        if self.trading and (self.busy or self.external_busy or self.blocked):
             return
         try:
             draft = self.build_draft(direction)
@@ -348,13 +369,41 @@ class OrderEntry(QWidget):
             self.error.show()
             return
         self.error.hide()
+        if self.order_type.currentIndex() == 3:
+            parent = self.relay_parent.currentData()
+            if parent is None:
+                self.error.setText('请选择有效的前置委托。')
+                self.error.show()
+                return
+            self.relay_requested.emit(draft, parent)
+            return
         if self.trading:
-            if self.busy or self.blocked:
+            if self.busy or self.external_busy or self.blocked:
                 return
             from okx_gui.trading import prepare_order
             self.start_task(lambda: prepare_order(draft), self.order_prepared)
             return
         self.show_confirmation(None, draft)
+
+    def set_relay_parents(self, parents):
+        if [self.relay_parent.itemData(i) for i in range(1, self.relay_parent.count())] == parents and self.relay_parent.count():
+            return
+        if self.relay_parent.view().isVisible():
+            return  # Refresh on the next tick after the popup closes.
+        selected = self.relay_parent.currentData()
+        self.relay_parent.blockSignals(True)
+        self.relay_parent.clear()
+        self.relay_parent.addItem('请选择前置委托', None)
+        for parent in parents:
+            self.relay_parent.addItem(parent.label, parent)
+            if selected is not None and (parent.kind, parent.identifier, parent.credentials) == (selected.kind, selected.identifier, selected.credentials):
+                self.relay_parent.setCurrentIndex(self.relay_parent.count() - 1)
+        self.relay_parent.blockSignals(False)
+
+    def set_external_busy(self, busy):
+        self.external_busy = busy
+        self.buy.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked and not busy)
+        self.sell.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked and not busy)
 
     def confirmation_key(self, prepared):
         credentials = prepared.credentials
@@ -433,7 +482,7 @@ class OrderEntry(QWidget):
             layout.addWidget(skip)
             confirm = close.addButton('确认发送 · ' + prepared.environment, QDialogButtonBox.AcceptRole)
             def send():
-                if self.busy or self.blocked:
+                if self.busy or self.external_busy or self.blocked:
                     return
                 from okx_gui.trading import submit_order
                 confirm.setEnabled(False)
@@ -463,8 +512,8 @@ class OrderEntry(QWidget):
             if self.task is task:
                 self.task = None
                 self.busy = False
-                self.buy.setEnabled(bool(self.contract.currentText()) and not self.blocked)
-                self.sell.setEnabled(bool(self.contract.currentText()) and not self.blocked)
+                self.buy.setEnabled(bool(self.contract.currentText()) and not self.blocked and not self.external_busy)
+                self.sell.setEnabled(bool(self.contract.currentText()) and not self.blocked and not self.external_busy)
                 self.note.setText('点击下单后校验交易规则')
             task.deleteLater()
             if result:

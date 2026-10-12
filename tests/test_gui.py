@@ -860,3 +860,66 @@ def test_cancel_receipt_updates_immediately_and_stale_snapshot_cannot_restore(qt
         release.set()
         qtbot.waitUntil(lambda: not window.order_status_tasks)
         window.close()
+
+
+def test_relay_creation_requires_confirmation_and_can_chain(qtbot):
+    from dataclasses import replace
+    from decimal import Decimal
+    from PySide6.QtWidgets import QPushButton
+    from okx_gui.relay import RelayBook, RelayParent
+    from okx_gui.positions import Credentials
+    from okx_gui.orders import parse_orders
+    from okx_gui.order_entry import OrderDraft
+    credentials = Credentials('test','secret','phrase','1')
+    window = make_window(qtbot)
+    window.relay_controller.timer.stop()
+    window.relay_controller.book = RelayBook(credentials_loader=lambda: credentials,
+                                              reader=lambda *args: 'waiting')
+    raw = dict(ordId='123', instId='BTC-USDT-SWAP', instType='SWAP', side='buy',
+               tdMode='cross', ordType='limit', px='82600', sz='100', state='live')
+    order = replace(parse_orders([raw])[0], credentials=credentials)
+    window.update_orders([order], '1')
+    assert window.order_entry.relay_parent.count() == 2
+    parent = window.order_entry.relay_parent.itemData(1)
+    draft = OrderDraft('BTC-USDT-SWAP','open','short','cross',10,'limit',Decimal('0.1'),Decimal('83000'))
+    window.confirm_relay(draft, parent)
+    assert window.relay_controller.book.snapshot() == []
+    dialog = window.relay_creation_dialog
+    next(button for button in dialog.findChildren(QPushButton) if button.text() == '创建接力').click()
+    first = window.relay_controller.book.snapshot()[0]
+    assert first.state == 'waiting' and len(window.relay_cards) == 1
+    assert window.orders_scroll.isVisible()
+    assert window.relay_cards[0].cancel.text() == '取消接力'
+    assert any(window.order_entry.relay_parent.itemData(i).kind == 'relay'
+               for i in range(1, window.order_entry.relay_parent.count()))
+    second = window.relay_controller.book.add(draft, RelayParent('relay',first.identifier,draft.instrument,'B',credentials))
+    window.refresh_relay_display()
+    assert len(window.relay_cards) == 2
+    window.close()
+    assert window.relay_controller.book.items[first.identifier].state == 'canceled'
+    assert window.relay_controller.book.items[second.identifier].state == 'canceled'
+
+
+def test_existing_plan_orders_are_selectable_relay_parents(qtbot):
+    from dataclasses import replace
+    from okx_gui.positions import Credentials
+    from okx_gui.orders import parse_orders
+    window = make_window(qtbot)
+    window.relay_controller.timer.stop()
+    credentials = Credentials('test', 'secret', 'phrase', '1')
+    rows = [dict(_algo=True, algoId=str(i), instId='BTC-USDT-SWAP', instType='SWAP',
+                 side='buy', tdMode='cross', ordType=kind, sz='10', state='live',
+                 triggerPx='82000', orderPx='82000')
+            for i, kind in enumerate(('trigger', 'conditional', 'oco'), 1)]
+    orders = [replace(order, credentials=credentials) for order in parse_orders(rows)]
+    window.update_orders(orders, '1')
+    combo = window.order_entry.relay_parent
+    assert combo.count() == 4
+    window.order_entry.order_type.setCurrentText('接力委托')
+    combo.setCurrentIndex(next(i for i in range(1, combo.count()) if combo.itemData(i).identifier == '1'))
+    parent = combo.currentData()
+    assert parent.kind == 'algo' and parent.identifier == '1'
+    window.update_orders(orders, '1')
+    assert combo.currentData() == parent
+    assert '计划委托' in combo.currentText()
+    window.close()

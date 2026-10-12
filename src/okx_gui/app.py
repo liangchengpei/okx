@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QPainter, QPolygonF
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -360,6 +360,15 @@ class MainWindow(QMainWindow):
         self.order_entry = OrderEntry(trading=True)
         self.order_entry.submitted.connect(self.order_submitted)
         self.order_entry.accepted_order.connect(self.show_accepted_order)
+        from okx_gui.relay import RelayController
+        self.relay_controller = RelayController(self, busy=lambda: self.order_entry.busy or self.order_entry.blocked or
+                                                (self.order_action_dialog is not None))
+        self.relay_creation_dialog = None
+        self.order_entry.relay_requested.connect(self.confirm_relay)
+        self.relay_controller.changed.connect(self.refresh_relay_display)
+        self.relay_controller.busy_changed.connect(self.order_entry.set_external_busy)
+        self.relay_controller.accepted.connect(self.show_accepted_order)
+        self.relay_controller.accepted.connect(lambda prepared, order_id: self.order_submitted(order_id))
         self.order_entry_scroll = QScrollArea()
         self.order_entry_scroll.setWidgetResizable(True)
         self.order_entry_scroll.setWidget(self.order_entry)
@@ -454,6 +463,12 @@ class MainWindow(QMainWindow):
         self.orders_cards_layout = QVBoxLayout(content)
         self.orders_cards_layout.setContentsMargins(0, 0, 0, 0)
         self.orders_cards_layout.setSpacing(0)
+        self.relay_container = QWidget()
+        self.relay_layout = QVBoxLayout(self.relay_container)
+        self.relay_layout.setContentsMargins(0, 0, 0, 0)
+        self.relay_cards = []
+        self.orders_cards_layout.addWidget(self.relay_container)
+        self.relay_container.hide()
         self.orders_cards_layout.addStretch()
         self.orders_scroll.setWidget(content)
         self.orders_scroll.hide()
@@ -520,13 +535,109 @@ class MainWindow(QMainWindow):
             card.action_requested.connect(self.open_order_action)
             self.orders_cards_layout.insertWidget(len(self.order_cards), card)
             self.order_cards.append(card)
-        self.orders_scroll.setVisible(bool(orders))
+        has_relays = bool(self.relay_cards)
+        self.orders_scroll.setVisible(bool(orders) or has_relays)
         self.orders_scroll.verticalScrollBar().setValue(scroll_position)
-        self.orders_empty.setVisible(not orders)
+        self.orders_empty.setVisible(not orders and not has_relays)
         self.orders_empty.setText("暂无委托")
-        self.orders_heading.setText(f"委托 ({len(orders)})")
+        self.orders_heading.setText(f"委托 ({len(orders)})" + (f" · 接力 ({len(self.relay_cards)})" if has_relays else ""))
+        self.update_relay_choices()
         self._orders_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
         self.orders_panel.setToolTip("")
+
+    def update_relay_choices(self):
+        if not hasattr(self, 'relay_controller'):
+            return
+        from okx_gui.relay import RelayParent, STATE_NAMES, TERMINAL_FAILURES
+        choices = [RelayParent('algo' if order.raw.get('_algo') else 'order', order.order_id, order.instrument,
+                               f'{order.instrument} {order.kind} {order.side} · {order.order_id}', order.credentials)
+                   for order in self.last_orders if order.credentials is not None and
+                   (not order.raw.get('_algo') or (order.raw.get('ordType') in ('trigger', 'conditional', 'oco')
+                                                   and order.raw.get('advanceOrdType') != 'chase'))]
+        choices += [RelayParent('relay', item.identifier, item.draft.instrument,
+                                f'接力 {item.identifier[-6:]} · {item.draft.instrument} · {STATE_NAMES[item.state]}', item.credentials)
+                    for item in self.relay_controller.book.snapshot() if item.state not in TERMINAL_FAILURES]
+        self.order_entry.set_relay_parents(choices)
+
+    def confirm_relay(self, draft, parent):
+        if self.relay_creation_dialog is not None:
+            self.relay_creation_dialog.raise_()
+            return
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.setWindowTitle('确认创建接力委托')
+        dialog.setModal(True)
+        self.relay_creation_dialog = dialog
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        direction = ('开' if draft.action == 'open' else '平') + ('多' if draft.direction == 'long' else '空')
+        for label, value in [('前置单', parent.label), ('合约', draft.instrument), ('方向', direction),
+                             ('环境', '模拟盘' if parent.credentials.flag == '1' else '实盘'),
+                             ('保证金模式', '全仓' if draft.margin == 'cross' else '逐仓'),
+                             ('杠杆', str(draft.leverage) + '×' if draft.action == 'open' else '沿用持仓'),
+                             ('价格', str(draft.price) if draft.price is not None else '市价'),
+                             ('数量', f'{draft.quantity} {draft.instrument.split("-")[0]}')]:
+            form.addRow(label, QLabel(value))
+        if draft.order_type == 'trigger':
+            form.addRow('接力订单类型', QLabel('计划委托'))
+            form.addRow('触发价格', QLabel(str(draft.trigger_price)))
+            form.addRow('触发依据', QLabel({'last': '最新价', 'mark': '标记价', 'index': '指数价'}[draft.trigger_source]))
+        layout.addLayout(form)
+        note = QLabel('创建后等待前置单完全成交，再自动校验并发送，无需再次确认。\n'
+                      '部分成交或撤单不触发；退出软件取消尚未触发的接力，已发送到交易所的订单保留。')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        error = QLabel()
+        error.setTextFormat(Qt.PlainText)
+        error.setWordWrap(True)
+        layout.addWidget(error)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        confirm = buttons.addButton('创建接力', QDialogButtonBox.ActionRole)
+        def create():
+            try:
+                self.relay_controller.book.add(draft, parent)
+            except ValueError as exc:
+                error.setText(str(exc))
+                return
+            confirm.setEnabled(False)
+            dialog.accept()
+            self.order_entry.quantity.clear()
+            self.refresh_relay_display()
+        confirm.clicked.connect(create)
+        buttons.rejected.connect(dialog.reject)
+        dialog.finished.connect(lambda _: setattr(self, 'relay_creation_dialog', None))
+        layout.addWidget(buttons)
+        dialog.show()
+
+    def refresh_relay_display(self):
+        from okx_gui.relay import STATE_NAMES
+        for card in self.relay_cards:
+            self.relay_layout.removeWidget(card)
+            card.deleteLater()
+        self.relay_cards = []
+        for item in self.relay_controller.book.snapshot():
+            draft = item.draft
+            fields = [('前置单', item.parent.label, ''), ('委托价格', str(draft.price) if draft.price is not None else '市价', ''),
+                      (f'数量 ({draft.instrument.split("-")[0]})', str(draft.quantity), '')]
+            if draft.order_type == 'trigger':
+                source = {'last': '最新价', 'mark': '标记价', 'index': '指数价'}[draft.trigger_source]
+                fields.append(('计划触发价格', f'{source} {draft.trigger_price}', ''))
+            if item.message:
+                fields.append(('说明', item.message, ''))
+            if item.order_id:
+                fields.append(('交易所订单号', item.order_id, ''))
+            buy = (draft.direction == 'long') == (draft.action == 'open')
+            order = Order(item.identifier, draft.instrument, '接力委托 ' + item.identifier[-6:], '买入' if buy else '卖出',
+                          '全仓' if draft.margin == 'cross' else '逐仓', str(draft.leverage) + 'x',
+                          datetime.fromtimestamp(item.created, ZoneInfo('Asia/Shanghai')).strftime('%m/%d %H:%M:%S'),
+                          int(item.created * 1000), tuple(fields), STATE_NAMES[item.state],
+                          raw={'_relay':item.identifier, 'relay_state':item.state}, credentials=item.credentials)
+            card = OrderCard(order)
+            card.action_requested.connect(self.open_order_action)
+            self.relay_layout.addWidget(card)
+            self.relay_cards.append(card)
+        self.relay_container.setVisible(bool(self.relay_cards))
+        self.update_orders(self.last_orders, self.orders_flag)
 
     def order_action_accepted(self, order, action):
         if action != 'cancel':
@@ -554,6 +665,15 @@ class MainWindow(QMainWindow):
         task.start()
 
     def open_order_action(self, order, action):
+        if order.raw.get('_relay'):
+            if action == 'cancel' and QMessageBox.question(self, '取消本地接力', '取消此接力及依赖它的后续等待接力？不会撤销交易所订单。',
+                                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+                try:
+                    self.relay_controller.book.cancel(order.raw['_relay'])
+                    self.refresh_relay_display()
+                except ValueError as exc:
+                    self.show_error(str(exc))
+            return
         if self.order_action_dialog is not None:
             self.order_action_dialog.raise_()
             return
@@ -841,6 +961,10 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if not self.relay_controller.shutdown():
+            self.order_entry.note.setText('接力请求处理中，请等待后关闭窗口')
+            event.ignore()
+            return
         if any(task.isRunning() for task in self.order_status_tasks.values()):
             event.ignore()
             return
