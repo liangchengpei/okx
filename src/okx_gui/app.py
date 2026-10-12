@@ -436,6 +436,7 @@ class MainWindow(QMainWindow):
         self.orders_heading = layout.takeAt(0).widget()
         layout.takeAt(0)
         layout.addWidget(self.orders_heading)
+        self.order_action_dialog = None
         self.order_cards = []
         self.orders_scroll = QScrollArea()
         self.orders_scroll.setWidgetResizable(True)
@@ -474,6 +475,7 @@ class MainWindow(QMainWindow):
         self.order_cards = []
         for order in orders:
             card = OrderCard(order)
+            card.action_requested.connect(self.open_order_action)
             self.orders_cards_layout.insertWidget(len(self.order_cards), card)
             self.order_cards.append(card)
         self.orders_scroll.setVisible(bool(orders))
@@ -483,6 +485,17 @@ class MainWindow(QMainWindow):
         self.orders_heading.setText(f"委托 ({len(orders)})")
         self._orders_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
         self.orders_panel.setToolTip("")
+
+    def open_order_action(self, order, action):
+        if self.order_action_dialog is not None:
+            self.order_action_dialog.raise_()
+            return
+        from okx_gui.order_action_dialog import OrderActionDialog
+        dialog = OrderActionDialog(order, action, self)
+        self.order_action_dialog = dialog
+        dialog.updated.connect(lambda: self.order_submitted(order.order_id))
+        dialog.finished.connect(lambda _: setattr(self, 'order_action_dialog', None))
+        dialog.show()
 
     def orders_failed(self, message):
         suffix = f"，显示上次数据（{self._orders_updated_at}）" if self._orders_updated_at else ""
@@ -760,6 +773,10 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if self.order_action_dialog is not None and (self.order_action_dialog.running or self.order_action_dialog.uncertain):
+            self.order_action_dialog.raise_()
+            event.ignore()
+            return
         if not self.order_entry.shutdown():
             self.order_entry.note.setText('订单请求处理中，请等待结果后关闭窗口')
             event.ignore()

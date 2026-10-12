@@ -753,3 +753,24 @@ def test_order_entry_tracks_contracts_and_live_quotes(qtbot):
     assert entry.current_quote() == Decimal('82601.5')
     window.remove_contract('ETH-USDT-SWAP')
     assert entry.contract.findText('ETH-USDT-SWAP') == -1
+
+
+def test_order_editor_survives_list_refresh(qtbot):
+    from dataclasses import replace
+    from okx_gui.orders import parse_orders
+    from okx_gui.positions import Credentials
+    window = make_window(qtbot)
+    raw = dict(ordId='123', instId='BTC-USDT-SWAP', instType='SWAP', side='buy',
+               tdMode='cross', ordType='limit', px='82600', sz='100', state='live')
+    item = replace(parse_orders([raw], {'BTC-USDT-SWAP':dict(ctVal='0.01', ctValCcy='BTC')})[0],
+                   credentials=Credentials('test','secret','phrase','1'))
+    window.update_orders([item], '1')
+    window.order_cards[0].modify.click()
+    dialog = window.order_action_dialog
+    dialog.inputs['newPx'][0].setText('83000')
+    window.update_orders([], '1')
+    qtbot.wait(10)
+    assert dialog.isVisible() and dialog.inputs['newPx'][0].text() == '83000'
+    dialog.reject()
+    assert window.order_action_dialog is None
+    window.close()

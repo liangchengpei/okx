@@ -1,5 +1,5 @@
 """Read-only regular and algo pending orders, with complete pagination."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import time
@@ -36,6 +36,9 @@ class Order:
     timestamp: int
     fields: tuple
     state: str
+    raw: dict = field(default_factory=dict, repr=False)
+    metadata: dict = field(default_factory=dict, repr=False)
+    credentials: object = field(default=None, repr=False)
 
     @property
     def title(self):
@@ -117,7 +120,7 @@ def parse_orders(data, instruments=None):
                             '买入' if item['side'] == 'buy' else '卖出',
                             {'cross': '全仓', 'isolated': '逐仓', 'cash': '现货'}.get(item.get('tdMode'), '--'),
                             number(item.get('lever')) + 'x' if item.get('lever') else '--', created, timestamp, tuple(fields),
-                            {'live': '待成交', 'partially_filled': '部分成交', 'pause': '已暂停'}.get(item.get('state'), item.get('state') or '--')))
+                            {'live': '待成交', 'partially_filled': '部分成交', 'pause': '已暂停'}.get(item.get('state'), item.get('state') or '--'), dict(item), dict(metadata)))
     return sorted(orders, key=lambda order: (order.timestamp, order.order_id), reverse=True)
 
 
@@ -185,7 +188,7 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
         raise OrdersError('委托查询网络异常，正在自动重试。') from None
     except Exception:
         raise OrdersError('委托读取失败，请检查连接和凭据配置。') from None
-    return parse_orders(rows, instruments)
+    return [replace(order, credentials=credentials) for order in parse_orders(rows, instruments)]
 
 
 class OrdersWorker(PositionsWorker):
