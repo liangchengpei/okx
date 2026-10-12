@@ -183,3 +183,5 @@ SQLite 默认保存至 `~/.local/share/okx-trader/funding_rates.sqlite3`（支�
 接口说明：[OKX 当前资金费率](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate)。
 
 资金费率请求默认读取 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量。也可单独为资金费率接口指定 HTTP 代理，例如 `OKX_FUNDING_PROXY=http://127.0.0.1:7890 bash run_gui.sh`（请换成实际地址）。未设置时保持默认网络配置；修改后重启程序生效。若平台返回地区限制，请检查代理出口是否满足平台访问要求。
+
+资金费率图叠加 OKX 实时价格：蓝色费率对应左侧百分比轴，橙色价格对应右轴，两条曲线共用时间轴及滚轮缩放。价格复用现有 OKX 行情推送，每秒采样，写入同一 SQLite 文件的独立 `price_samples` 表，保留最近7天并在重启时恢复。行情超过5秒未更新时暂停价格采样；长时间缺失时断开连线，不补造数据。采样和写盘在后台进行，不增加额外价格 REST 请求。

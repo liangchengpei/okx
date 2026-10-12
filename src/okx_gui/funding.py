@@ -23,6 +23,17 @@ class FundingPoint:
     rate: Decimal
 
 
+@dataclass(frozen=True)
+class PricePoint:
+    timestamp: int
+    price: Decimal
+
+    @property
+    def rate(self):
+        # Shared display reduction compares the series value.
+        return self.price
+
+
 class FundingStore:
     def __init__(self, path=None):
         self.path = path or default_database_path().with_name('funding_rates.sqlite3')
@@ -62,6 +73,32 @@ class FundingStore:
                 WHERE instrument=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp''',
                 (instrument, now - RETENTION_MS, now)).fetchall()
         return [FundingPoint(exchange, timestamp, Decimal(rate)) for exchange, timestamp, rate in rows]
+
+
+class PriceStore(FundingStore):
+    """Independent price series, with the same seven-day retention policy."""
+    def __init__(self, path=None):
+        super().__init__(path)
+        with self.connect() as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS price_samples (
+                instrument TEXT NOT NULL, timestamp INTEGER NOT NULL, price TEXT NOT NULL,
+                PRIMARY KEY(instrument,timestamp))''')
+            db.execute('CREATE INDEX IF NOT EXISTS price_sample_timestamp ON price_samples(timestamp)')
+
+    def save(self, instrument, points, now):
+        with self.connect() as db:
+            db.executemany('INSERT OR REPLACE INTO price_samples VALUES (?,?,?)',
+                [(instrument, p.timestamp, str(p.price)) for p in points
+                 if now - RETENTION_MS <= p.timestamp <= now and p.price.is_finite() and p.price > 0])
+            db.execute('DELETE FROM price_samples WHERE timestamp<?', (now - RETENTION_MS,))
+
+    def load(self, instrument, now):
+        with self.connect() as db:
+            db.execute('DELETE FROM price_samples WHERE timestamp<?', (now - RETENTION_MS,))
+            rows = db.execute('''SELECT timestamp,price FROM price_samples
+                WHERE instrument=? AND timestamp>=? AND timestamp<=? ORDER BY timestamp''',
+                (instrument, now - RETENTION_MS, now)).fetchall()
+        return [PricePoint(timestamp, Decimal(price)) for timestamp, price in rows]
 
 
 async def fetch_current_funding(client, instrument):
@@ -114,12 +151,38 @@ def funding_client_options():
 class FundingWorker(QThread):
     status = Signal(str, str)
     sampled = Signal(object)
+    price_sampled = Signal(object)
 
     def __init__(self, instrument, database_path, parent=None):
         super().__init__(parent)
         self.instrument, self.database_path = instrument, database_path
         self._lock = threading.Lock()
         self._loop = self._task = None
+        self._latest_price = None
+
+    def set_price(self, value):
+        try:
+            price = Decimal(str(value))
+        except InvalidOperation:
+            return
+        if price.is_finite() and price > 0:
+            with self._lock:
+                self._latest_price = (price, time.monotonic())
+
+    async def collect_prices(self):
+        store = PriceStore(self.database_path)
+        while not self.isInterruptionRequested():
+            with self._lock:
+                latest = self._latest_price
+            if latest and time.monotonic() - latest[1] <= 5:
+                point = PricePoint(int(time.time() * 1000), latest[0])
+                try:
+                    await asyncio.to_thread(store.save, self.instrument, [point], point.timestamp)
+                    self.price_sampled.emit(point)
+                except Exception:
+                    # Keep displaying live quotes even if disk persistence fails.
+                    self.price_sampled.emit(point)
+            await asyncio.sleep(1)
 
     def stop(self):
         self.requestInterruption()
@@ -143,22 +206,25 @@ class FundingWorker(QThread):
         with self._lock:
             self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
         store = FundingStore(self.database_path)
-        async with httpx.AsyncClient(**funding_client_options()) as client:
-            while not self.isInterruptionRequested():
-                cycle_started = asyncio.get_running_loop().time()
-                async def update(exchange):
-                    now = int(time.time() * 1000)
-                    try:
-                        point = await fetch_current_funding(client, self.instrument)
-                        now = point.timestamp
-                        points = [point]
-                        await asyncio.to_thread(store.save, self.instrument, points, now)
-                        self.status.emit(exchange, f'{point.rate * 100:.6f}%' )
-                        self.sampled.emit(point)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self.status.emit(exchange, f'更新失败（保留缓存）· {funding_error_message(exc)}')
-                await asyncio.gather(*(update(exchange) for exchange in EXCHANGES))
-                elapsed = asyncio.get_running_loop().time() - cycle_started
-                await asyncio.sleep(max(0, 1 - elapsed))
+        async def poll_funding():
+            async with httpx.AsyncClient(**funding_client_options()) as client:
+                while not self.isInterruptionRequested():
+                    cycle_started = asyncio.get_running_loop().time()
+                    async def update(exchange):
+                        now = int(time.time() * 1000)
+                        try:
+                            point = await fetch_current_funding(client, self.instrument)
+                            now = point.timestamp
+                            points = [point]
+                            await asyncio.to_thread(store.save, self.instrument, points, now)
+                            self.status.emit(exchange, f'{point.rate * 100:.6f}%' )
+                            self.sampled.emit(point)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            self.status.emit(exchange, f'更新失败（保留缓存）· {funding_error_message(exc)}')
+                    await asyncio.gather(*(update(exchange) for exchange in EXCHANGES))
+                    elapsed = asyncio.get_running_loop().time() - cycle_started
+                    await asyncio.sleep(max(0, 1 - elapsed))
+
+        await asyncio.gather(poll_funding(), self.collect_prices())

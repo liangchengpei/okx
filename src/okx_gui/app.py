@@ -180,6 +180,7 @@ class ContractRow(QFrame):
         self.setToolTip("未启动监控")
 
     def update_quote(self, price, change):
+        self.funding_area.worker.set_price(price)
         self.price.setText(price)
         self.state.setText("实时监控中")
         self.change.setText("--" if change is None else f"{change:+.2f}%")

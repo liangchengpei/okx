@@ -215,3 +215,59 @@ def test_display_reduction_preserves_spikes_and_original_samples():
     assert points[321] in reduced and points[322] in reduced
     assert reduced[0] == points[0] and reduced[-1] == points[-1]
     assert len(points) == 1000
+
+
+def test_price_cache_is_independent_and_retains_seven_days(tmp_path):
+    from okx_gui.funding import PricePoint, PriceStore
+    now = 10 * RETENTION_MS
+    path = tmp_path / 'funding.sqlite3'
+    store = PriceStore(path)
+    points = [PricePoint(now - RETENTION_MS - 1, Decimal('80000')),
+              PricePoint(now - 1000, Decimal('82601.50001'))]
+    store.save('BTC', points, now)
+    assert PriceStore(path).load('BTC', now) == points[1:]
+    assert store.load('ETH', now) == []
+    assert FundingStore(path).load('BTC', now) == []
+    store.save('BTC', [], now + RETENTION_MS)
+    assert store.load('BTC', now + RETENTION_MS) == []
+
+
+@pytest.mark.parametrize('stale', [False, True])
+def test_price_sampling_uses_quote_feed_and_skips_stale_quotes(tmp_path, monkeypatch, stale):
+    from okx_gui.funding import FundingWorker, PriceStore
+    worker = FundingWorker('BTC-USDT-SWAP', tmp_path / 'samples.sqlite3')
+    clock = [10.0]
+    monkeypatch.setattr('okx_gui.funding.time.monotonic', lambda: clock[0])
+    worker.set_price('82601.5')
+    worker.set_price('invalid')
+    if stale:
+        clock[0] += 6
+    stopped = [False]
+    monkeypatch.setattr(worker, 'isInterruptionRequested', lambda: stopped[0])
+    async def finish(_):
+        stopped[0] = True
+    monkeypatch.setattr('okx_gui.funding.asyncio.sleep', finish)
+    asyncio.run(worker.collect_prices())
+    points = PriceStore(worker.database_path).load('BTC-USDT-SWAP', int(time.time() * 1000))
+    assert len(points) == (0 if stale else 1)
+    if points:
+        assert points[0].price == Decimal('82601.5')
+
+
+def test_dual_axis_price_series_survives_refresh_and_zoom(qtbot):
+    from okx_gui.funding import PricePoint, PriceStore
+    from okx_gui.funding_chart import FundingChart
+    now = int(time.time() * 1000)
+    points = [PricePoint(now - 2000, Decimal('82601.5')),
+              PricePoint(now - 1000, Decimal('82620'))]
+    PriceStore().save('BTC-USDT-SWAP', points, now)
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    assert chart.plot.price_points == points
+    chart.plot.manual_span = 60000
+    chart.refresh()
+    assert chart.plot.span == 60000
+    assert chart.plot.price_points == points
+    chart.resize(640, 280)
+    assert not chart.plot.grab().isNull()
+    assert chart.shutdown()
