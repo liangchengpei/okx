@@ -18,6 +18,7 @@ from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
 from okx_gui.orders import OrdersWorker
 from okx_gui.order_widgets import OrderCard
+from okx_gui.order_entry import OrderEntry
 from okx_gui.voice import PriceLadder, SpeechService, positive_decimal
 
 STYLE = """
@@ -339,6 +340,7 @@ class MainWindow(QMainWindow):
         handle.setCursor(Qt.SplitVCursor)
         self.setup_positions_panel()
         self.setup_orders_panel()
+        self.setup_order_entry()
         for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
             self.add_contract(inst)
         if auto_start:
@@ -347,6 +349,17 @@ class MainWindow(QMainWindow):
             self.refresh_positions()
         if auto_start_orders:
             self.start_orders()
+
+    def setup_order_entry(self):
+        layout = self.order_panel.layout()
+        heading = layout.takeAt(0).widget()
+        layout.takeAt(0)
+        layout.addWidget(heading)
+        self.order_entry = OrderEntry()
+        self.order_entry_scroll = QScrollArea()
+        self.order_entry_scroll.setWidgetResizable(True)
+        self.order_entry_scroll.setWidget(self.order_entry)
+        layout.addWidget(self.order_entry_scroll, 1)
 
     def setup_positions_panel(self):
         layout = self.positions_panel.layout()
@@ -489,6 +502,7 @@ class MainWindow(QMainWindow):
             return False
         row = ContractRow(inst, self.remove_contract, self.toggle_voice, self.toggle_emergency)
         self.rows[inst] = row
+        self.order_entry.set_contracts(self.rows)
         for button in row.emergency_buttons.values():
             button.setChecked(True)
         self.relayout_contracts()
@@ -506,6 +520,7 @@ class MainWindow(QMainWindow):
         for side in ("low", "high"):
             self.speech.set_emergency(inst, False, side=side)
         row = self.rows.pop(inst)
+        self.order_entry.set_contracts(self.rows)
         self.speech.cancel(inst)
         self.row_layout.removeWidget(row)
         row.deleteLater()
@@ -699,6 +714,7 @@ class MainWindow(QMainWindow):
     def on_ticker(self, inst, price, change):
         if self.worker and not self.worker.isInterruptionRequested() and inst in self.rows:
             self.rows[inst].update_quote(price, change)
+            self.order_entry.update_quote(inst, price)
             self.process_voice(inst, price)
             self.status_label.setText("● 行情监控中 · OKX 实时报价")
 

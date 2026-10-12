@@ -739,3 +739,16 @@ def test_crossing_disabled_emergency_bound_does_not_clear_enabled_bound_on_stop(
     row.voice_button.click()
     assert row.emergency_buttons['low'].isChecked()
     assert not row.emergency_buttons['high'].isChecked()
+
+
+def test_order_entry_tracks_contracts_and_live_quotes(qtbot):
+    window = make_window(qtbot)
+    entry = window.order_entry
+    assert entry.contract.count() == len(window.rows)
+    assert window.add_contract('ETH-USDT-SWAP')
+    assert entry.contract.findText('ETH-USDT-SWAP') >= 0
+    window.toggle_market()
+    window.worker.ticker.emit('BTC-USDT-SWAP', '82601.5', None)
+    assert entry.current_quote() == Decimal('82601.5')
+    window.remove_contract('ETH-USDT-SWAP')
+    assert entry.contract.findText('ETH-USDT-SWAP') == -1

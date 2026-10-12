@@ -43,6 +43,10 @@ class FundingPlot(QWidget):
         self.plot_rect = QRectF()
         self.manual_span = None
         self.y_scales = {'funding': 1.0, 'price': 1.0}
+        self.y_offsets = {'funding': 0.0, 'price': 0.0}
+        self.y_ranges = {'funding': (-1, 1), 'price': (0, 1)}
+        self.view_end = None
+        self._drag = None
         self.setMinimumHeight(180)
         self.setMouseTracking(True)
         self.setAccessibleName('OKX 实时资金费率曲线')
@@ -54,6 +58,37 @@ class FundingPlot(QWidget):
         earliest = min(self.points[0].timestamp if self.points else self.now,
                        self.price_points[0].timestamp if self.price_points else self.now)
         return min(RETENTION_MS, max(3600000, self.now - earliest))
+
+    @property
+    def end_time(self):
+        return self.now if self.view_end is None else self.view_end
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.plot_rect.contains(event.position()):
+            self.manual_span = self.span
+            self._drag = (event.position(), self.end_time, dict(self.y_offsets), dict(self.y_ranges))
+            self.setCursor(Qt.ClosedHandCursor)
+            self.setToolTip('')
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._drag is not None:
+            self._drag = None
+            self.unsetCursor()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.view_end = None
+            self.y_offsets = {'funding': 0.0, 'price': 0.0}
+            self.update()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -73,7 +108,7 @@ class FundingPlot(QWidget):
         event.accept()
 
     def scaled_y_range(self, axis, low, high):
-        center = (low + high) / 2
+        center = (low + high) / 2 + self.y_offsets[axis]
         half = (high - low) * self.y_scales[axis] / 2
         return center - half, center + half
 
@@ -87,12 +122,13 @@ class FundingPlot(QWidget):
         rect = QRectF(72, 24, max(1, self.width() - 164), max(1, self.height() - 66))
         self.plot_rect = rect
         span = self.span
-        start_index = max(0, bisect_left(self.points, self.now - span,
+        end_time = self.end_time
+        start_index = max(0, bisect_left(self.points, end_time - span,
                                        key=lambda point: point.timestamp) - 1)
-        visible_points = render_points(self.points[start_index:], rect.width())
-        price_start = max(0, bisect_left(self.price_points, self.now - span,
+        visible_points = render_points(self.points[start_index:bisect_left(self.points, end_time + 1, key=lambda p: p.timestamp)], rect.width())
+        price_start = max(0, bisect_left(self.price_points, end_time - span,
                                        key=lambda point: point.timestamp) - 1)
-        prices = render_points(self.price_points[price_start:], rect.width())
+        prices = render_points(self.price_points[price_start:bisect_left(self.price_points, end_time + 1, key=lambda p: p.timestamp)], rect.width())
         price_values = [float(point.price) for point in prices]
         price_low, price_high = (min(price_values), max(price_values)) if price_values else (0, 1)
         price_padding = max((price_high - price_low) * 0.12, abs(price_high) * 0.0001, 0.000001)
@@ -102,6 +138,7 @@ class FundingPlot(QWidget):
         padding = max((high - low) * 0.12, 0.001)
         low, high = self.scaled_y_range('funding', low - padding, high + padding)
         price_low, price_high = self.scaled_y_range('price', price_low, price_high)
+        self.y_ranges = {'funding': (low, high), 'price': (price_low, price_high)}
         for i in range(5):
             y = rect.bottom() - i * rect.height() / 4
             value = low + i * (high - low) / 4
@@ -116,7 +153,7 @@ class FundingPlot(QWidget):
                              Qt.AlignLeft | Qt.AlignVCenter, label)
         painter.setPen(QColor('#7b818a'))
         for i in range(5):
-            timestamp = self.now - span + span * i / 4
+            timestamp = end_time - span + span * i / 4
             label = datetime.fromtimestamp(timestamp / 1000, ZONE).strftime('%H:%M')
             x = rect.left() + i * rect.width() / 4
             painter.drawText(QRectF(x - 24, rect.bottom() + 4, 48, 34), Qt.AlignCenter, label)
@@ -130,7 +167,7 @@ class FundingPlot(QWidget):
             painter.setPen(QPen(QColor(COLORS[exchange]), 1.6))
             painter.setBrush(QColor(COLORS[exchange]))
             for i, point in enumerate(points):
-                x = rect.left() + (point.timestamp - self.now + span) / span * rect.width()
+                x = rect.left() + (point.timestamp - end_time + span) / span * rect.width()
                 y = rect.bottom() - (float(point.rate * 100) - low) / (high - low) * rect.height()
                 position = QPointF(x, y)
                 if i and point.timestamp - points[i - 1].timestamp <= 5 * 60000:
@@ -141,7 +178,7 @@ class FundingPlot(QWidget):
             painter.drawPath(path)
         price_path = QPainterPath()
         for i, point in enumerate(prices):
-            x = rect.left() + (point.timestamp - self.now + span) / span * rect.width()
+            x = rect.left() + (point.timestamp - end_time + span) / span * rect.width()
             y = rect.bottom() - (float(point.price) - price_low) / (price_high - price_low) * rect.height()
             if i and point.timestamp - prices[i - 1].timestamp <= 5 * 60000:
                 price_path.lineTo(QPointF(x, y))
@@ -155,8 +192,19 @@ class FundingPlot(QWidget):
             painter.drawText(rect, Qt.AlignCenter, '等待实时资金费率，采集后逐步形成曲线')
 
     def mouseMoveEvent(self, event):
+        if self._drag is not None:
+            origin, end_time, offsets, ranges = self._drag
+            delta = event.position() - origin
+            self.view_end = max(self.now - RETENTION_MS + self.span,
+                                min(self.now, end_time - delta.x() / self.plot_rect.width() * self.span))
+            for axis in ('funding', 'price'):
+                low, high = ranges[axis]
+                self.y_offsets[axis] = offsets[axis] + delta.y() / self.plot_rect.height() * (high - low)
+            self.update()
+            event.accept()
+            return
         if self.plot_rect.contains(event.position()) and (self.points or self.price_points):
-            timestamp = self.now - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
+            timestamp = self.end_time - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
             lines = ['附近实时采样（北京时间）']
             for exchange in EXCHANGES:
                 points = self.points
@@ -193,7 +241,7 @@ class FundingChart(QFrame):
         heading = QHBoxLayout()
         title = QLabel('OKX 实时资金费率')
         title.setObjectName('muted')
-        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。Ctrl+滚轮缩放纵轴：左半侧为费率，右半侧为价格。')
+        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。Ctrl+滚轮缩放纵轴：左半侧为费率，右半侧为价格。按住左键平移，双击恢复最新时间和纵轴位置。')
         heading.addWidget(title)
         heading.addStretch()
         for exchange in EXCHANGES:
