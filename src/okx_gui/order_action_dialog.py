@@ -10,6 +10,7 @@ from okx_gui.trading import TradingTask
 
 class OrderActionDialog(QDialog):
     updated = Signal()
+    operation_accepted = Signal(object, str)
 
     def __init__(self, order, action, parent=None):
         super().__init__(parent)
@@ -99,6 +100,7 @@ class OrderActionDialog(QDialog):
         self.succeeded = True
         self.confirm.setEnabled(False)
         self.message.setText(message)
+        self.operation_accepted.emit(self.order, self.action)
         self.updated.emit()
 
     def failed(self, message, uncertain):

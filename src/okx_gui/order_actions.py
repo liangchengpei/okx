@@ -133,3 +133,26 @@ def perform_order_action(order, action, changes=None, *, trade_factory=TradeAPI,
         raise
     except Exception:
         raise TradingError('核对委托失败，尚未发送操作，请检查连接后重试。') from None
+
+
+def fetch_order_after_action(order, *, trade_factory=TradeAPI, credentials_loader=load_credentials):
+    """Read one affected order without waiting for the full pending-order scan."""
+    from okx_gui.orders import parse_orders
+    credentials = order.credentials
+    if credentials is None or credentials_loader() != credentials:
+        raise TradingError('账户已改变，请等待委托列表更新。')
+    algo = bool(order.raw.get('_algo'))
+    id_key = 'algoId' if algo else 'ordId'
+    with trade_factory(**options(credentials)) as trade:
+        trade.timeout = httpx.Timeout(3)
+        response = (trade.get_algo_order_details(algoId=order.order_id) if algo else
+                    trade.get_order(instId=order.instrument, ordId=order.order_id))
+        rows = data(response, '查询委托状态', credentials)
+    row = next((r for r in rows if str(r.get(id_key)) == order.order_id and r.get('instId') == order.instrument), None)
+    if row is None:
+        raise TradingError('尚未确认委托最终状态，请等待列表同步。')
+    if row.get('state') in ('canceled', 'mmp_canceled', 'filled', 'effective', 'order_failed'):
+        return None
+    if row.get('state') not in ('live', 'partially_filled', 'pause'):
+        raise TradingError('委托状态待确认，请等待列表同步。')
+    return replace(parse_orders([{**row, '_algo':algo}], {order.instrument:order.metadata})[0], credentials=credentials)

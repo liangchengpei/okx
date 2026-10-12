@@ -165,3 +165,23 @@ def test_independent_order_queries_overlap(no_throttle):
             return super().order_algos_list(**kwargs)
     rows = fetch_orders(Credentials('key', 'secret', 'phrase'), ConcurrentTrade, instrument_cache=dict(METADATA))
     assert len(rows) == 1
+
+
+def test_default_worker_polls_and_accepts_immediate_refresh(qtbot, tmp_path):
+    path = tmp_path / 'credentials.env'
+    path.write_text('apiKey=test\nsecretKey=test\npassphrase=test\n')
+    calls = []
+    worker = OrdersWorker(credentials_path=path, fetcher=lambda _: calls.append(True) or [])
+    assert worker.interval == 1
+    try:
+        with qtbot.waitSignal(worker.updated):
+            worker.start()
+        with qtbot.waitSignal(worker.updated, timeout=2000):
+            pass
+        assert len(calls) == 2
+        with qtbot.waitSignal(worker.updated):
+            worker.refresh()
+        assert len(calls) == 3
+    finally:
+        worker.stop()
+        assert worker.wait(1000)

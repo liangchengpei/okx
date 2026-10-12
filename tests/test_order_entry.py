@@ -319,3 +319,26 @@ def test_cancel_does_not_save_skip_preference(qtbot, monkeypatch, tmp_path):
     dialog.findChild(QCheckBox).setChecked(True)
     dialog.reject()
     assert not settings.allKeys()
+
+
+def test_preflight_parameters_visible_before_sending(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSettings
+    from okx_gui.positions import Credentials
+    from okx_gui.trading import PreparedOrder
+    widget = OrderEntry(trading=True, confirmation_settings=QSettings(str(tmp_path/'audit.ini'), QSettings.IniFormat))
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.quantity.setText('0.1')
+    widget.price.setText('82000')
+    draft = widget.build_draft('long')
+    from dataclasses import replace
+    draft = replace(draft, leverage=100)
+    prepared = PreparedOrder(draft, Credentials('key','secret','phrase','1'), 'net_mode','gui123',
+                             contract_quantity=Decimal('10'), balance_snapshot={'USDT':{'availEq':'0','frozenBal':'2583.89'}})
+    monkeypatch.setattr('okx_gui.trading.submit_order', lambda _: pytest.fail('No order may be sent during review'))
+    widget.order_prepared(prepared)
+    text = widget.diagnostics.text()
+    assert 'sz=10 张' in text and '82.0 USDT' in text
+    assert 'posSide=net' in text and 'side=buy' in text and 'px=82000' in text
+    assert 'USDT 可用权益 0' in text
+    widget.findChild(QDialog).reject()

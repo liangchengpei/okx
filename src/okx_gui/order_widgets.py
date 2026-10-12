@@ -31,7 +31,10 @@ class OrderCard(QFrame):
             self.modify.setEnabled(False)
             self.modify.setToolTip('此类委托暂不支持在此修改，请在 OKX 修改')
         layout.addLayout(header)
-        if order.state == '已受理，待同步':
+        if order.state == '撤单处理中':
+            self.modify.setEnabled(False)
+            self.cancel.setEnabled(False)
+        if order.state in ('已受理，待同步', '撤单处理中'):
             layout.addWidget(PositionCard.label(order.state, 'positionCaption'))
         badges = QHBoxLayout()
         badges.setSpacing(4)

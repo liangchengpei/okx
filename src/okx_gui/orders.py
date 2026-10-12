@@ -206,4 +206,4 @@ class OrdersWorker(PositionsWorker):
         super().__init__(parent, **kwargs)
         if kwargs.get('fetcher') is None:
             self.fetcher = lambda credentials: fetch_orders(credentials, instrument_cache=self._instruments,
-                                                             should_stop=self.isInterruptionRequested)
+                                                             should_stop=self.refresh_pending)

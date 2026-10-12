@@ -804,3 +804,59 @@ def test_accepted_order_shown_immediately_then_reconciled(qtbot):
     window.expire_order_receipts()
     assert [card.order.order_id for card in window.order_cards] == ['123']
     window.close()
+
+
+def test_order_operations_immediately_request_both_refreshes(qtbot, monkeypatch):
+    monkeypatch.setattr("okx_gui.order_actions.fetch_order_after_action", lambda order: None)
+    from dataclasses import replace
+    from okx_gui.orders import parse_orders
+    from okx_gui.positions import Credentials
+    window = MainWindow(worker_factory=FakeWorker, speech_factory=FakeSpeech, auto_start=False,
+                        positions_worker_factory=FakePositionsWorker, orders_worker_factory=FakePositionsWorker)
+    qtbot.addWidget(window)
+    window.order_entry.submitted.emit('123')
+    assert window.positions_worker.refreshes == window.orders_worker.refreshes == 1
+    raw = dict(ordId='123', instId='BTC-USDT-SWAP', instType='SWAP', side='buy',
+               tdMode='cross', ordType='limit', px='82600', sz='100', state='live')
+    item = replace(parse_orders([raw])[0], credentials=Credentials('test','secret','phrase','1'))
+    for action in ('cancel', 'amend'):
+        previous = window.orders_worker.refreshes
+        window.open_order_action(item, action)
+        window.order_action_dialog.completed('请求已受理')
+        assert window.orders_worker.refreshes == previous + 1
+        assert window.positions_worker.refreshes == previous + 1
+        window.order_action_dialog.reject()
+    qtbot.waitUntil(lambda: not window.order_status_tasks)
+    window.close()
+
+
+def test_cancel_receipt_updates_immediately_and_stale_snapshot_cannot_restore(qtbot, monkeypatch):
+    from dataclasses import replace
+    from threading import Event
+    from okx_gui.orders import parse_orders
+    from okx_gui.positions import Credentials
+    release = Event()
+    def query(order):
+        assert release.wait(2)
+        return None
+    monkeypatch.setattr('okx_gui.order_actions.fetch_order_after_action', query)
+    window = make_window(qtbot)
+    raw = dict(ordId='123', instId='BTC-USDT-SWAP', instType='SWAP', side='buy',
+               tdMode='cross', ordType='limit', px='82600', sz='100', state='live')
+    item = replace(parse_orders([raw])[0], credentials=Credentials('test','secret','phrase','1'))
+    try:
+        window.update_orders([item], '1')
+        window.order_action_accepted(item, 'cancel')
+        assert window.order_cards[0].order.state == '撤单处理中'
+        assert not window.order_cards[0].cancel.isEnabled()
+        release.set()
+        qtbot.waitUntil(lambda: not window.order_status_tasks)
+        assert not window.order_cards
+        window.update_orders([item], '1')
+        assert not window.order_cards
+        window.update_orders([], '1')
+        assert not window.confirmed_closed_orders
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not window.order_status_tasks)
+        window.close()

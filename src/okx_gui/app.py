@@ -2,6 +2,7 @@
 import re
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -439,6 +440,9 @@ class MainWindow(QMainWindow):
         layout.takeAt(0)
         layout.addWidget(self.orders_heading)
         self.order_action_dialog = None
+        self.order_status_tasks = {}
+        self.pending_cancellations = {}
+        self.confirmed_closed_orders = {}
         self.pending_receipts = {}
         self.last_orders = []
         self.orders_flag = ""
@@ -498,6 +502,12 @@ class MainWindow(QMainWindow):
         identities = {(bool(order.raw.get('_algo')), order.order_id) for order in orders}
         self.pending_receipts = {key: value for key, value in self.pending_receipts.items()
                                  if key not in identities and value[2] == flag and time.monotonic() - value[1] < 10}
+        self.pending_cancellations = {key: value for key, value in self.pending_cancellations.items()
+                                      if key in identities and value[1] == flag and time.monotonic() - value[0] < 10}
+        self.confirmed_closed_orders = {key: value for key, value in self.confirmed_closed_orders.items()
+                                       if key in identities and value == flag}
+        orders = [replace(order, state='撤单处理中') if (bool(order.raw.get('_algo')), order.order_id) in self.pending_cancellations else order
+                  for order in orders if (bool(order.raw.get('_algo')), order.order_id) not in self.confirmed_closed_orders]
         orders = sorted(list(orders) + [value[0] for value in self.pending_receipts.values()],
                         key=lambda order: (order.timestamp, order.order_id), reverse=True)
         scroll_position = self.orders_scroll.verticalScrollBar().value()
@@ -518,6 +528,31 @@ class MainWindow(QMainWindow):
         self._orders_updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%H:%M:%S")
         self.orders_panel.setToolTip("")
 
+    def order_action_accepted(self, order, action):
+        if action != 'cancel':
+            return
+        from okx_gui.trading import TradingTask
+        from okx_gui.order_actions import fetch_order_after_action
+        key = (bool(order.raw.get('_algo')), order.order_id)
+        if key in self.order_status_tasks:
+            return
+        self.pending_cancellations[key] = (time.monotonic(), order.credentials.flag)
+        self.update_orders(self.last_orders, self.orders_flag)
+        task = TradingTask(lambda: fetch_order_after_action(order), self)
+        self.order_status_tasks[key] = task
+        def completed(result):
+            if result is None:
+                self.confirmed_closed_orders[key] = order.credentials.flag
+                self.pending_cancellations.pop(key, None)
+                self.update_orders(self.last_orders, self.orders_flag)
+        task.completed.connect(completed)
+        task.failed.connect(lambda message, _: self.orders_panel.setToolTip(message))
+        def finished():
+            self.order_status_tasks.pop(key, None)
+            task.deleteLater()
+        task.finished.connect(finished)
+        task.start()
+
     def open_order_action(self, order, action):
         if self.order_action_dialog is not None:
             self.order_action_dialog.raise_()
@@ -525,6 +560,7 @@ class MainWindow(QMainWindow):
         from okx_gui.order_action_dialog import OrderActionDialog
         dialog = OrderActionDialog(order, action, self)
         self.order_action_dialog = dialog
+        dialog.operation_accepted.connect(self.order_action_accepted)
         dialog.updated.connect(lambda: self.order_submitted(order.order_id))
         dialog.finished.connect(lambda _: setattr(self, 'order_action_dialog', None))
         dialog.show()
@@ -805,6 +841,9 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if any(task.isRunning() for task in self.order_status_tasks.values()):
+            event.ignore()
+            return
         if self.order_action_dialog is not None and (self.order_action_dialog.running or self.order_action_dialog.uncertain):
             self.order_action_dialog.raise_()
             event.ignore()

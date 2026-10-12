@@ -30,3 +30,8 @@ def offline_leverage_rules(monkeypatch):
         task.completed.emit((Decimal('100'), Decimal('10')))
         task.finished.emit()
     monkeypatch.setattr(LeverageTask, 'start', start)
+
+
+@pytest.fixture(autouse=True)
+def isolate_order_audit(monkeypatch):
+    monkeypatch.setattr('okx_gui.order_audit.audit', lambda *args, **kwargs: True)

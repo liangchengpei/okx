@@ -209,3 +209,43 @@ def test_api_domain_default_and_regional_configuration(tmp_path):
     path.write_text(base + 'OKX_API_DOMAIN=https://example.com\n')
     with pytest.raises(PositionsError, match='OKX_API_DOMAIN'):
         load_credentials(path)
+
+
+@pytest.mark.parametrize('resource', ['positions', 'orders'])
+@pytest.mark.parametrize('old_failed', [False, True])
+def test_refresh_during_fetch_discards_old_result_and_immediately_requeries(qtbot, tmp_path, resource, old_failed):
+    from threading import Event
+    from okx_gui.positions import PositionsWorker
+    from okx_gui.orders import OrdersWorker
+    path = tmp_path / 'credentials.env'
+    path.write_text('apiKey=test\nsecretKey=test\npassphrase=test\n')
+    started, release = Event(), Event()
+    calls = []
+    def fetcher(credentials):
+        calls.append(True)
+        if len(calls) == 1:
+            started.set()
+            assert release.wait(2)
+            if old_failed:
+                raise PositionsError('old request failed')
+            return ['old']
+        return ['fresh']
+    worker_type = PositionsWorker if resource == 'positions' else OrdersWorker
+    worker = worker_type(credentials_path=path, interval=60, fetcher=fetcher)
+    results = []
+    errors = []
+    worker.error.connect(errors.append)
+    worker.updated.connect(lambda rows, flag: results.append(rows))
+    try:
+        worker.start()
+        qtbot.waitUntil(started.is_set)
+        with qtbot.waitSignal(worker.updated, timeout=2000) as result:
+            worker.refresh()
+            release.set()
+        assert result.args[0] == ['fresh']
+        assert results == [['fresh']] and errors == []
+        assert len(calls) == 2
+    finally:
+        release.set()
+        worker.stop()
+        assert worker.wait(3000)

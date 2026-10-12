@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+import json
 import uuid
 import time
 
@@ -29,6 +30,8 @@ class PreparedOrder:
     client_id: str
     prepared_at: float = field(default_factory=time.monotonic)
     contract_quantity: Decimal | None = None
+    balance_snapshot: dict = field(default_factory=dict)
+    instrument_rules: dict = field(default_factory=dict)
 
     @property
     def environment(self):
@@ -86,7 +89,7 @@ def order_parameters(prepared):
     return params
 
 
-def validate_with_account(account, draft, credentials):
+def validate_with_account(account, draft, credentials, rule_snapshot=None):
     if (draft.action not in ('open', 'close') or draft.direction not in ('long', 'short') or
             draft.margin not in ('cross', 'isolated') or draft.order_type not in ('limit', 'market', 'trigger')):
         raise TradingError('订单参数无效。')
@@ -106,6 +109,8 @@ def validate_with_account(account, draft, credentials):
     instrument = next((r for r in rows if r.get('instId') == draft.instrument), None)
     if not instrument or instrument.get('state') != 'live':
         raise TradingError('合约不存在或当前不可交易。')
+    if rule_snapshot is not None:
+        rule_snapshot.update({key: instrument.get(key) for key in ('ctVal', 'ctMult', 'ctValCcy', 'lotSz', 'minSz')})
     lot = number(instrument.get('lotSz'), '数量步长')
     minimum = number(instrument.get('minSz'), '最小数量')
     base = draft.instrument.split('-')[0]
@@ -156,19 +161,37 @@ def validate_with_account(account, draft, credentials):
     return mode, quantity
 
 
+def balance_snapshot(account, credentials):
+    try:
+        rows = data(account.get_account_balance(), '读取保证金余额', credentials)
+        if not rows:
+            return {'error': '余额响应为空'}
+        row = rows[0]
+        usdt = next((item for item in row.get('details', []) if item.get('ccy') == 'USDT'), {})
+        return {'totalEq': row.get('totalEq'), 'USDT': {key: usdt.get(key) for key in
+                ('eq', 'availEq', 'availBal', 'frozenBal', 'ordFrozen')}}
+    except Exception as exc:
+        return {'error': credentials.redact(str(exc))}
+
+
 def prepare_order(draft, credentials=None, account_factory=AccountAPI):
     credentials = credentials or load_credentials()
     try:
         with account_factory(**options(credentials)) as account:
             account.timeout = httpx.Timeout(5)
-            mode, contract_quantity = validate_with_account(account, draft, credentials)
+            rules = {}
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                balance_request = pool.submit(balance_snapshot, account, credentials)
+                mode, contract_quantity = validate_with_account(account, draft, credentials, rules)
+                balance = balance_request.result()
     except TradingError:
         raise
     except httpx.HTTPError:
         raise TradingError('订单校验网络异常，请稍后重试。') from None
     except Exception:
         raise TradingError('订单校验失败，请检查账户与连接。') from None
-    return PreparedOrder(draft, credentials, mode, 'gui' + uuid.uuid4().hex[:29], contract_quantity=contract_quantity)
+    return PreparedOrder(draft, credentials, mode, 'gui' + uuid.uuid4().hex[:29], contract_quantity=contract_quantity,
+                         balance_snapshot=balance, instrument_rules=rules)
 
 
 def current_order_leverage(account, draft, mode, credentials):
@@ -225,6 +248,8 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
         raise
     except Exception:
         raise TradingError('校验或设置杠杆失败，尚未发送订单；请检查账户杠杆和连接后重试。') from None
+    from okx_gui.order_audit import audit, order_diagnostics, response_fields
+    audit('order_request', order_diagnostics(prepared), credentials)
     # Only this call sends the order, exactly once. A lost response is not a rejection.
     try:
         with trade_factory(**options(credentials)) as trade:
@@ -244,18 +269,23 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
                 except Exception:
                     pass
                 raise SubmissionUncertain(f'订单结果未确认，请在 OKX 检查委托/成交记录。客户订单号：{prepared.client_id}。请勿重复下单。') from None
+            safe_response = response_fields(response, credentials)
+            audit('order_response', safe_response, credentials)
             if not isinstance(response, dict) or 'code' not in response:
                 raise SubmissionUncertain(f'订单响应异常，请核对客户订单号 {prepared.client_id}，请勿重复下单。')
             if str(response.get('code')) == '50004':
                 raise SubmissionUncertain(f'OKX 处理超时，订单结果未确认，请核对客户订单号 {prepared.client_id}，请勿重复下单。')
             if str(response.get('code')) not in ('0', '1'):
-                data(response, '发送订单', credentials)
+                try:
+                    data(response, '发送订单', credentials)
+                except TradingError as exc:
+                    raise TradingError(str(exc) + '\nOKX: ' + json.dumps(safe_response, ensure_ascii=False)) from None
             rows = response.get('data')
             if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict) or 'sCode' not in rows[0]:
                 raise SubmissionUncertain(f'订单结果未确认，请核对客户订单号 {prepared.client_id}。')
             row = rows[0]
             if str(row['sCode']) != '0':
-                raise TradingError(credentials.redact(f"订单被拒绝（{row['sCode']}）：{row.get('sMsg', '')}")[:240])
+                raise TradingError('订单被拒绝：' + json.dumps(safe_response, ensure_ascii=False))
             if not row.get(id_key):
                 raise SubmissionUncertain(f'未返回订单号，请核对客户订单号 {prepared.client_id}。')
             return str(row[id_key])

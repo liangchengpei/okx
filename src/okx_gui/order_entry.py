@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import time
 import hashlib
+import json
 
 from PySide6.QtCore import Qt, QTimer, Signal, QSettings
 from PySide6.QtWidgets import (
@@ -144,6 +145,11 @@ class OrderEntry(QWidget):
         self.error.setWordWrap(True)
         self.error.hide()
         layout.addWidget(self.error)
+        self.diagnostics = QLabel()
+        self.diagnostics.setTextFormat(Qt.PlainText)
+        self.diagnostics.setWordWrap(True)
+        self.diagnostics.hide()
+        layout.addWidget(self.diagnostics)
         self.note = QLabel('仅预览，不发送订单')
         self.note.setObjectName('muted')
         note_row = QHBoxLayout()
@@ -361,6 +367,22 @@ class OrderEntry(QWidget):
         self.note.setText('已恢复下单确认')
 
     def order_prepared(self, prepared):
+        from okx_gui.order_audit import order_diagnostics, audit
+        info = order_diagnostics(prepared)
+        text = (f"{prepared.environment} · instId={info['instId']} · tdMode={info['tdMode']}\n"
+                f"posSide={info['posSide']} · side={info['side']} · px={info['px']} · sz={info['sz']} 张\n"
+                f"目标杠杆 {info['targetLeverage']}× · 预计保证金 {info['estimatedMargin']} {info['marginCurrency']}\n"
+                '仅按委托价估算，不含手续费、已有仓位抵扣及交易所风险调整。')
+        usdt = prepared.balance_snapshot.get('USDT', {})
+        if usdt:
+            text += f"\nUSDT 可用权益 {usdt.get('availEq')} · 冻结余额 {usdt.get('frozenBal')}"
+        elif prepared.balance_snapshot.get('error'):
+            text += '\n余额读取失败，无法确认可用保证金。'
+        self.diagnostics.setText(text)
+        self.diagnostics.setToolTip(json.dumps(info, ensure_ascii=False))
+        self.diagnostics.show()
+        if not audit('order_prepared', info, prepared.credentials):
+            self.diagnostics.setText(text + '\n诊断日志写入失败。')
         if self.confirmation_settings.value(self.confirmation_key(prepared), False, type=bool):
             from okx_gui.trading import submit_order
             self.start_task(lambda: submit_order(prepared), lambda order_id: self.order_sent(order_id, prepared))
@@ -389,6 +411,10 @@ class OrderEntry(QWidget):
             form.addRow('触发后委托', QLabel('限价' if draft.price is not None else '市价'))
         layout.addLayout(form)
         if prepared is not None:
+            from okx_gui.order_audit import order_diagnostics
+            info = order_diagnostics(prepared)
+            form.addRow('API 数量 sz', QLabel(str(prepared.contract_quantity) + ' 张'))
+            form.addRow('预计保证金（未含费用）', QLabel(info['estimatedMargin'] + ' ' + info['marginCurrency']))
             form.addRow('交易环境', QLabel(prepared.environment))
             form.addRow('API 地址', QLabel(prepared.credentials.domain))
             form.addRow('持仓模式', QLabel('双向持仓' if prepared.position_mode == 'long_short_mode' else '单向持仓'))

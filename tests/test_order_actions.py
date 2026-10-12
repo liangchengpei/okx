@@ -227,3 +227,22 @@ def test_cancel_dialog_closes_after_success(qtbot, monkeypatch):
     with qtbot.waitSignal(dialog.accepted):
         dialog.confirm.click()
     assert len(calls) == 1 and calls[0][1] == 'cancel'
+
+
+@pytest.mark.parametrize('algo', [False, True])
+@pytest.mark.parametrize('state', ['canceled', 'filled', 'live'])
+def test_priority_order_query_uses_confirmed_state(algo, state):
+    from okx_gui.order_actions import fetch_order_after_action
+    item = setup_order(algo)
+    Trade.fresh['state'] = state
+    result = fetch_order_after_action(item, trade_factory=Trade, credentials_loader=lambda: CREDS)
+    assert (result is None) == (state != 'live')
+    assert not Trade.calls
+
+
+def test_missing_order_is_not_assumed_canceled():
+    from okx_gui.order_actions import fetch_order_after_action
+    item = setup_order()
+    Trade.fresh['ordId'] = 'other'
+    with pytest.raises(TradingError, match='尚未确认'):
+        fetch_order_after_action(item, trade_factory=Trade, credentials_loader=lambda: CREDS)

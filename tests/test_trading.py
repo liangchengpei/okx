@@ -34,6 +34,8 @@ class Account:
         return ok([{'instId': DRAFT.instrument, 'state': 'live', 'lotSz': '1', 'minSz': '1',
                     'ctType': 'linear', 'ctValCcy': 'BTC', 'ctVal': '1', 'ctMult': '1',
                     'tickSz': '0.1', 'lever': '100', 'maxLmtSz': '100', 'maxMktSz': '50'}])
+    def get_account_balance(self):
+        return ok([{'totalEq':'100000', 'details':[{'ccy':'USDT','eq':'2000','availEq':'0','availBal':'0','frozenBal':'2500'}]}])
     def get_positions(self, **kwargs):
         return ok(self.positions)
     def get_leverage(self, **kwargs):
@@ -454,3 +456,50 @@ def test_close_does_not_query_or_change_leverage(monkeypatch):
     Account.positions = [{'instId':DRAFT.instrument,'mgnMode':'cross','posSide':'long','pos':'2','availPos':'2'}]
     submit(prepare_order(replace(DRAFT, action='close'), CREDS, Account))
     assert not Account.calls and len(Trade.calls) == 1
+
+
+@pytest.mark.parametrize('face,expected', [('0.01','10'), ('0.001','100')])
+def test_btc_point_one_uses_fetched_face_and_fractional_lot(face, expected):
+    from okx_gui.order_audit import order_diagnostics
+    class LiveRules(Account):
+        def get_instruments(self, **kwargs):
+            result = super().get_instruments(**kwargs)
+            result['data'][0].update(ctVal=face, ctValCcy='BTC', lotSz='0.01', minSz='0.01', maxLmtSz='10000')
+            return result
+    draft = replace(DRAFT, price=Decimal('82000'), quantity=Decimal('0.1'), leverage=100)
+    prepared = prepare_order(draft, CREDS, LiveRules)
+    assert prepared.contract_quantity == Decimal(expected)
+    assert Decimal(order_parameters(prepared)['sz']) == Decimal(expected)
+    assert prepared.instrument_rules['ctVal'] == face
+    assert prepared.instrument_rules['lotSz'] == '0.01'
+    assert prepared.balance_snapshot['USDT']['availEq'] == '0'
+    assert prepared.balance_snapshot['totalEq'] == '100000'
+    assert Decimal(order_diagnostics(prepared)['estimatedMargin']) == Decimal('82')
+    assert not Account.calls and not Trade.calls
+
+
+def test_51008_preserves_raw_fields_and_logs_only_sanitized_parameters(monkeypatch):
+    events = []
+    monkeypatch.setattr('okx_gui.order_audit.audit', lambda event, payload, credentials: events.append((event,payload)))
+    msg = 'Insufficient USDT margin in account. ' + 'detail ' * 50
+    Trade.response = {'code':'1', 'msg':'All operations failed', 'data':[{'sCode':'51008','sMsg':msg}]}
+    with pytest.raises(TradingError) as exc:
+        submit(prepare_order(DRAFT, CREDS, Account))
+    error = str(exc.value)
+    assert '"code": "1"' in error and '"sCode": "51008"' in error
+    assert msg in error
+    request = next(payload for event,payload in events if event == 'order_request')
+    assert all(key in request for key in ['instId','tdMode','posSide','side','px','sz','targetLeverage','estimatedMargin'])
+    assert request['flag'] == '1' and request['domain'] == CREDS.domain
+    assert not any(secret in str(events) for secret in [CREDS.api_key, CREDS.secret_key, CREDS.passphrase])
+    response = next(payload for event,payload in events if event == 'order_response')
+    assert response['data'][0]['sMsg'] == msg
+
+
+def test_order_response_redacts_credentials_without_losing_error_code():
+    from okx_gui.order_audit import response_fields
+    result = response_fields({'code':'1','data':[{'sCode':'51008','sMsg':'test-secret test-phrase'}],
+                              'headers':{'secret':'never retain this'}}, CREDS)
+    assert result['data'][0]['sCode'] == '51008'
+    assert result['data'][0]['sMsg'] == '[已隐藏] [已隐藏]'
+    assert 'headers' not in result

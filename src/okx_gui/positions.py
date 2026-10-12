@@ -183,7 +183,7 @@ def parse_positions(data, instruments=None):
     return positions
 
 
-def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache=None):
+def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache=None, should_stop=lambda: False):
     try:
         with account_factory(
             api_key=credentials.api_key, api_secret_key=credentials.secret_key,
@@ -194,6 +194,8 @@ def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache
             instruments = instrument_cache if instrument_cache is not None else {}
             if isinstance(response, dict) and str(response.get("code")) == "0" and isinstance(response.get("data"), list):
                 for item in response["data"]:
+                    if should_stop():
+                        raise PositionsError("持仓查询已被新刷新请求替代。")
                     if not isinstance(item, dict) or item.get("pos") in ("0", "", None):
                         continue
                     instrument = item.get("instId")
@@ -208,6 +210,8 @@ def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache
                     except Exception:
                         pass  # Positions remain usable with an explicit quantity in contracts.
 
+    except PositionsError:
+        raise
     except httpx.HTTPError:
         raise PositionsError("持仓查询网络异常，请检查网络后刷新。") from None
     except Exception:
@@ -232,8 +236,12 @@ class PositionsWorker(QThread):
         self.credentials_path = credentials_path
         self.interval = interval
         self._instruments = {}
-        self.fetcher = fetcher or (lambda credentials: fetch_positions(credentials, instrument_cache=self._instruments))
         self._wake = threading.Event()
+        self.fetcher = fetcher or (lambda credentials: fetch_positions(
+            credentials, instrument_cache=self._instruments, should_stop=self.refresh_pending))
+
+    def refresh_pending(self):
+        return self.isInterruptionRequested() or self._wake.is_set()
 
     def refresh(self):
         self._wake.set()
@@ -249,13 +257,14 @@ class PositionsWorker(QThread):
             try:
                 credentials = load_credentials(self.credentials_path)
                 positions = self.fetcher(credentials)
-                if not self.isInterruptionRequested():
+                if not self.refresh_pending():
                     self.updated.emit(positions, credentials.flag)
             except PositionsError as exc:
-                if not self.isInterruptionRequested():
+                if not self.refresh_pending():
                     self.error.emit(str(exc))
             except Exception:
-                if not self.isInterruptionRequested():
-                    self.error.emit(f"{self.resource_name}读取失败，请检查配置并等待自动重试。")
+                if not self.refresh_pending():
+                    retry = "等待自动重试" if self.interval is not None else "重新触发刷新"
+                    self.error.emit(f"{self.resource_name}读取失败，请检查配置并{retry}。")
             if not self.isInterruptionRequested():
                 self._wake.wait(self.interval)
