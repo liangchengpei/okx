@@ -21,6 +21,7 @@ class Account:
     mode = 'long_short_mode'
     positions = []
     calls = []
+    current_leverage = '5'
     def __init__(self, **kwargs):
         assert kwargs['flag'] == '1'
     def __enter__(self):
@@ -35,8 +36,12 @@ class Account:
                     'tickSz': '0.1', 'lever': '100', 'maxLmtSz': '100', 'maxMktSz': '50'}])
     def get_positions(self, **kwargs):
         return ok(self.positions)
+    def get_leverage(self, **kwargs):
+        return ok([{'instId':DRAFT.instrument, 'mgnMode':kwargs['mgnMode'], 'posSide':side, 'lever':self.current_leverage}
+                   for side in (['net'] if self.mode == 'net_mode' else ['long', 'short'])])
     def set_leverage(self, **kwargs):
         self.calls.append(kwargs)
+        self.current_leverage = kwargs['lever']
         return ok([{}])
 
 
@@ -63,6 +68,7 @@ class Trade:
 @pytest.fixture(autouse=True)
 def reset():
     Account.mode = 'long_short_mode'
+    Account.current_leverage = '5'
     Account.positions = []
     Account.calls = []
     Trade.calls = []
@@ -335,3 +341,116 @@ def test_multiplier_and_fractional_contract_step(monkeypatch):
     prepared = prepare_order(replace(DRAFT, quantity=Decimal('0.03')), CREDS, CoinAccount)
     assert prepared.contract_quantity == Decimal('0.3')
     assert order_parameters(prepared)['sz'] == '0.3'
+
+
+def test_open_validation_queries_run_concurrently_without_positions():
+    from threading import Barrier
+    barrier = Barrier(2)
+    class ConcurrentAccount(Account):
+        def get_account_config(self):
+            barrier.wait(timeout=2)
+            return super().get_account_config()
+        def get_instruments(self, **kwargs):
+            barrier.wait(timeout=2)
+            return super().get_instruments(**kwargs)
+        def get_positions(self, **kwargs):
+            pytest.fail('Opening orders do not need a position query')
+    assert prepare_order(DRAFT, CREDS, ConcurrentAccount).contract_quantity == Decimal('1')
+
+
+@pytest.mark.parametrize('order_type', ['limit', 'market', 'trigger'])
+def test_same_leverage_skips_setting_and_sends(order_type):
+    Account.current_leverage = '10.0'
+    draft = replace(DRAFT, order_type=order_type, price=None if order_type == 'market' else DRAFT.price,
+                    trigger_price=Decimal('83000'))
+    class AlgoTrade(Trade):
+        def place_algo_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return ok([{'sCode':'0','algoId':'123'}])
+    prepared = prepare_order(draft, CREDS, Account)
+    assert submit_order(prepared, Account, AlgoTrade, lambda: CREDS) == '123'
+    assert Account.calls == [] and len(Trade.calls) == 1
+
+
+def test_different_leverage_is_set_then_read_back_before_order():
+    sequence = []
+    class ObservedAccount(Account):
+        def get_leverage(self, **kwargs):
+            sequence.append(('get', self.current_leverage))
+            return super().get_leverage(**kwargs)
+        def set_leverage(self, **kwargs):
+            sequence.append(('set', kwargs['lever']))
+            return super().set_leverage(**kwargs)
+    class ObservedTrade(Trade):
+        def place_order(self, **kwargs):
+            sequence.append(('order', None))
+            return super().place_order(**kwargs)
+    prepared = prepare_order(DRAFT, CREDS, ObservedAccount)
+    submit_order(prepared, ObservedAccount, ObservedTrade, lambda: CREDS)
+    assert sequence == [('get','5'), ('set','10'), ('get','10'), ('order',None)]
+
+
+@pytest.mark.parametrize('order_type', ['limit', 'trigger'])
+def test_59669_blocks_order_and_never_cancels_strategies(order_type):
+    class RejectedAccount(Account):
+        def set_leverage(self, **kwargs):
+            self.calls.append(kwargs)
+            return {'code':'59669', 'msg':'Cancel algo orders first test-secret test-phrase', 'data':[]}
+    def forbidden_trade(**kwargs):
+        pytest.fail('Must not create a trade client, submit, or cancel any order after 59669')
+    draft = replace(DRAFT, order_type=order_type, trigger_price=Decimal('83000'))
+    prepared = prepare_order(draft, CREDS, RejectedAccount)
+    with pytest.raises(TradingError) as exc:
+        submit_order(prepared, RejectedAccount, forbidden_trade, lambda: CREDS)
+    message = str(exc.value)
+    assert '59669' in message and '当前 5×' in message and '目标 10×' in message
+    assert '订单未发送' in message and '不会自动撤销' in message
+    assert 'test-secret' not in message and 'test-phrase' not in message
+    assert len(Account.calls) == 1 and not Trade.calls
+
+
+def test_success_response_without_effective_leverage_blocks_order():
+    class UnchangedAccount(Account):
+        def set_leverage(self, **kwargs):
+            self.calls.append(kwargs)
+            return ok([{}])
+    prepared = prepare_order(DRAFT, CREDS, UnchangedAccount)
+    with pytest.raises(TradingError, match='尚未确认目标倍数生效'):
+        submit_order(prepared, UnchangedAccount, Trade, lambda: CREDS)
+    assert len(Account.calls) == 1 and not Trade.calls
+
+
+@pytest.mark.parametrize('response', [ok([]), ok([{'instId':DRAFT.instrument,'mgnMode':'isolated','lever':'10'}]),
+                                     {'code':'50011','msg':'rate limited','data':[]}])
+def test_unavailable_current_leverage_blocks_setting_and_order(response):
+    class UnknownAccount(Account):
+        def get_leverage(self, **kwargs):
+            return response
+    prepared = prepare_order(DRAFT, CREDS, UnknownAccount)
+    with pytest.raises(TradingError):
+        submit_order(prepared, UnknownAccount, Trade, lambda: CREDS)
+    assert not Account.calls and not Trade.calls
+
+
+def test_isolated_hedge_leverage_selects_requested_side():
+    class SidedAccount(Account):
+        def get_leverage(self, **kwargs):
+            return ok([{'instId':DRAFT.instrument,'mgnMode':'isolated','posSide':side,'lever':value}
+                       for side, value in [('short','5'),('long','10')]])
+    draft = replace(DRAFT, margin='isolated')
+    prepared = prepare_order(draft, CREDS, SidedAccount)
+    submit_order(prepared, SidedAccount, Trade, lambda: CREDS)
+    assert not Account.calls and len(Trade.calls) == 1
+
+
+def test_isolated_hedge_adjustment_includes_pos_side():
+    draft = replace(DRAFT, margin='isolated', direction='short')
+    submit(prepare_order(draft, CREDS, Account))
+    assert Account.calls == [{'instId':DRAFT.instrument,'mgnMode':'isolated','lever':'10','posSide':'short'}]
+
+
+def test_close_does_not_query_or_change_leverage(monkeypatch):
+    monkeypatch.setattr(Account, 'get_leverage', lambda *args, **kwargs: pytest.fail('Closing must not query leverage'))
+    Account.positions = [{'instId':DRAFT.instrument,'mgnMode':'cross','posSide':'long','pos':'2','availPos':'2'}]
+    submit(prepare_order(replace(DRAFT, action='close'), CREDS, Account))
+    assert not Account.calls and len(Trade.calls) == 1

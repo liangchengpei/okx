@@ -1,4 +1,6 @@
 """Read-only regular and algo pending orders, with complete pagination."""
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -128,6 +130,7 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
     rows, seen = [], set()
     instruments = instrument_cache if instrument_cache is not None else {}
     next_request = 0.0
+    request_lock = threading.Lock()
 
     def check_stop():
         if should_stop():
@@ -136,11 +139,13 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
     def pages(method, id_key, **kwargs):
         nonlocal next_request
         after, cursors = '', set()
+        found = []
         while True:
             check_stop()
-            time.sleep(max(0, next_request - time.monotonic()))
-            check_stop()
-            next_request = time.monotonic() + 0.12
+            with request_lock:
+                time.sleep(max(0, next_request - time.monotonic()))
+                check_stop()
+                next_request = time.monotonic() + 0.12
             response = method(limit='100', after=after, **kwargs)
             if not isinstance(response, dict) or str(response.get('code')) != '0':
                 message = credentials.redact(f"委托查询失败（{response.get('code', '--')}）：{response.get('msg', '响应异常')}") if isinstance(response, dict) else '委托响应格式异常。'
@@ -148,25 +153,28 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
             data = response.get('data')
             if not isinstance(data, list) or any(not isinstance(row, dict) or not row.get(id_key) for row in data):
                 raise OrdersError('委托响应格式异常。')
-            for row in data:
-                identity = (id_key, str(row[id_key]))
-                if identity not in seen:
-                    seen.add(identity)
-                    rows.append({**row, '_algo': id_key == 'algoId'})
+            found.extend({**row, '_algo': id_key == 'algoId'} for row in data)
             if len(data) < 100:
                 break
             after = str(data[-1][id_key])
             if after in cursors:
                 raise OrdersError('委托分页异常，未能确认完整列表。')
             cursors.add(after)
+        return found
 
     try:
         with trade_factory(api_key=credentials.api_key, api_secret_key=credentials.secret_key,
                            passphrase=credentials.passphrase, flag=credentials.flag, domain=credentials.domain, debug=False) as trade:
             trade.timeout = httpx.Timeout(3)
-            pages(trade.get_order_list, 'ordId')
-            for kind in ALGO_TYPES:
-                pages(trade.order_algos_list, 'algoId', ordType=kind)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                requests = [pool.submit(pages, trade.get_order_list, 'ordId')]
+                requests += [pool.submit(pages, trade.order_algos_list, 'algoId', ordType=kind) for kind in ALGO_TYPES]
+                for request in requests:
+                    for row in request.result():
+                        identity = (bool(row['_algo']), str(row.get('algoId') if row['_algo'] else row['ordId']))
+                        if identity not in seen:
+                            seen.add(identity)
+                            rows.append(row)
         missing = {row['instId']: row.get('instType') for row in rows if row.get('instId') not in instruments and row.get('instType') in ('SWAP', 'FUTURES', 'OPTION')}
         if missing:
             with account_factory(api_key=credentials.api_key, api_secret_key=credentials.secret_key,

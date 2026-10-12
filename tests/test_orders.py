@@ -81,7 +81,7 @@ def test_fetch_all_types_and_preserve_read_only_settings(no_throttle):
     rows = fetch_orders(Credentials('key', 'secret', 'phrase'), FakeTrade, instrument_cache=dict(METADATA))
     instance = FakeTrade.instances[-1]
     assert len(rows) == 1
-    assert [kwargs['ordType'] for name, kwargs in instance.calls if name == 'algo'] == list(ALGO_TYPES)
+    assert sorted(kwargs['ordType'] for name, kwargs in instance.calls if name == 'algo') == sorted(ALGO_TYPES)
     assert instance.kwargs['flag'] == '0'
     assert instance.kwargs['debug'] is False
     assert instance.closed
@@ -150,3 +150,18 @@ def test_worker_reports_safe_errors_and_can_retry(qtbot, tmp_path):
     finally:
         worker.stop()
         assert worker.wait(1000)
+
+
+def test_independent_order_queries_overlap(no_throttle):
+    from threading import Barrier
+    barrier = Barrier(2)
+    class ConcurrentTrade(FakeTrade):
+        def get_order_list(self, **kwargs):
+            barrier.wait(timeout=2)
+            return super().get_order_list(**kwargs)
+        def order_algos_list(self, **kwargs):
+            if kwargs['ordType'] == 'trigger':
+                barrier.wait(timeout=2)
+            return super().order_algos_list(**kwargs)
+    rows = fetch_orders(Credentials('key', 'secret', 'phrase'), ConcurrentTrade, instrument_cache=dict(METADATA))
+    assert len(rows) == 1

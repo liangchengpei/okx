@@ -37,6 +37,7 @@ class OrderDraft:
 
 class OrderEntry(QWidget):
     submitted = Signal(str)
+    accepted_order = Signal(object, str)
 
     def __init__(self, parent=None, *, trading=False, confirmation_settings=None):
         super().__init__(parent)
@@ -362,7 +363,7 @@ class OrderEntry(QWidget):
     def order_prepared(self, prepared):
         if self.confirmation_settings.value(self.confirmation_key(prepared), False, type=bool):
             from okx_gui.trading import submit_order
-            self.start_task(lambda: submit_order(prepared), self.order_sent)
+            self.start_task(lambda: submit_order(prepared), lambda order_id: self.order_sent(order_id, prepared))
         else:
             self.show_confirmation(prepared)
 
@@ -392,7 +393,7 @@ class OrderEntry(QWidget):
             form.addRow('API 地址', QLabel(prepared.credentials.domain))
             form.addRow('持仓模式', QLabel('双向持仓' if prepared.position_mode == 'long_short_mode' else '单向持仓'))
         note = QLabel(('确认后发送至 OKX ' + prepared.environment + '。' +
-                       ('开仓将按所选倍数设置账户杠杆。' if draft.action == 'open' else '仅平仓，不修改杠杆。'))
+                       ('开仓先核对当前杠杆，仅在与所选倍数不同时调整。' if draft.action == 'open' else '仅平仓，不修改杠杆。'))
                       if prepared is not None else '本次仅预览，不发送订单。')
         if prepared is not None and draft.action == 'open' and prepared.position_mode == 'net_mode':
             note.setText(note.text() + '单向持仓模式：反向成交先抵扣原持仓，超出部分建立反向仓位。')
@@ -414,7 +415,7 @@ class OrderEntry(QWidget):
                     self.confirmation_settings.setValue(self.confirmation_key(prepared), True)
                     self.confirmation_settings.sync()
                 dialog.accept()
-                self.start_task(lambda: submit_order(prepared), self.order_sent)
+                self.start_task(lambda: submit_order(prepared), lambda order_id: self.order_sent(order_id, prepared))
             confirm.clicked.connect(send)
         close.rejected.connect(dialog.close)
         layout.addWidget(close)
@@ -445,11 +446,13 @@ class OrderEntry(QWidget):
         task.finished.connect(finished)
         task.start()
 
-    def order_sent(self, order_id):
+    def order_sent(self, order_id, prepared=None):
         self.quantity.clear()
         self.error.setText(f'订单已受理：{order_id}（不代表已触发或成交）')
         self.error.setStyleSheet('color: #15966b;')
         self.error.show()
+        if prepared is not None:
+            self.accepted_order.emit(prepared, order_id)
         self.submitted.emit(order_id)
 
     def order_failed(self, message, uncertain):

@@ -774,3 +774,33 @@ def test_order_editor_survives_list_refresh(qtbot):
     dialog.reject()
     assert window.order_action_dialog is None
     window.close()
+
+
+def test_accepted_order_shown_immediately_then_reconciled(qtbot):
+    from dataclasses import replace
+    from decimal import Decimal
+    from okx_gui.order_entry import OrderDraft
+    from okx_gui.trading import PreparedOrder
+    from okx_gui.positions import Credentials
+    window = make_window(qtbot)
+    draft = OrderDraft('BTC-USDT-SWAP','open','long','cross',10,'limit',Decimal('0.01'),Decimal('82600'))
+    prepared = PreparedOrder(draft, Credentials('test','secret','phrase','1'),'net_mode','gui123', contract_quantity=Decimal('1'))
+    window.show_accepted_order(prepared, '123')
+    assert len(window.order_cards) == 1
+    receipt = window.order_cards[0].order
+    assert receipt.state == '已受理，待同步'
+    assert not window.order_cards[0].cancel.isEnabled()
+    window.update_orders([], '1')  # A snapshot begun before submission cannot remove the receipt.
+    assert len(window.order_cards) == 1
+    actual = replace(receipt, state='待成交', credentials=prepared.credentials)
+    window.update_orders([actual], '1')
+    assert len(window.order_cards) == 1
+    assert window.order_cards[0].order.state == '待成交'
+    assert not window.pending_receipts
+    window.show_accepted_order(prepared, '124')
+    key = (False, '124')
+    item, timestamp, flag = window.pending_receipts[key]
+    window.pending_receipts[key] = (item, timestamp - 11, flag)
+    window.expire_order_receipts()
+    assert [card.order.order_id for card in window.order_cards] == ['123']
+    window.close()

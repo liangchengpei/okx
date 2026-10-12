@@ -1,6 +1,7 @@
 """Contract monitor GUI."""
 import re
 import sys
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,7 @@ from okx_gui.liquidation_chart import LiquidationChart
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
-from okx_gui.orders import OrdersWorker
+from okx_gui.orders import OrdersWorker, Order, TYPE_NAMES
 from okx_gui.order_widgets import OrderCard
 from okx_gui.order_entry import OrderEntry
 from okx_gui.voice import PriceLadder, SpeechService, positive_decimal
@@ -357,6 +358,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(heading)
         self.order_entry = OrderEntry(trading=True)
         self.order_entry.submitted.connect(self.order_submitted)
+        self.order_entry.accepted_order.connect(self.show_accepted_order)
         self.order_entry_scroll = QScrollArea()
         self.order_entry_scroll.setWidgetResizable(True)
         self.order_entry_scroll.setWidget(self.order_entry)
@@ -437,6 +439,9 @@ class MainWindow(QMainWindow):
         layout.takeAt(0)
         layout.addWidget(self.orders_heading)
         self.order_action_dialog = None
+        self.pending_receipts = {}
+        self.last_orders = []
+        self.orders_flag = ""
         self.order_cards = []
         self.orders_scroll = QScrollArea()
         self.orders_scroll.setWidgetResizable(True)
@@ -467,7 +472,34 @@ class MainWindow(QMainWindow):
         if not self._orders_updated_at:
             self.orders_empty.setText("正在读取委托…")
 
+    def show_accepted_order(self, prepared, order_id):
+        draft = prepared.draft
+        now = datetime.now(ZoneInfo('Asia/Shanghai'))
+        fields = [('委托价格', str(draft.price) if draft.price is not None else '市价', '')]
+        if draft.order_type == 'trigger':
+            fields.insert(0, ('触发价格', str(draft.trigger_price), ''))
+        fields.append((f'委托数量 ({draft.instrument.split("-")[0]})', str(draft.quantity), ''))
+        buy = (draft.direction == 'long') == (draft.action == 'open')
+        receipt = Order(order_id, draft.instrument, TYPE_NAMES[draft.order_type], '买入' if buy else '卖出',
+                        '全仓' if draft.margin == 'cross' else '逐仓', f'{draft.leverage}x',
+                        now.strftime('%m/%d %H:%M:%S'), int(now.timestamp() * 1000), tuple(fields),
+                        '已受理，待同步', raw={'_algo': draft.order_type == 'trigger'})
+        key = (draft.order_type == 'trigger', order_id)
+        self.pending_receipts[key] = (receipt, time.monotonic(), prepared.credentials.flag)
+        self.update_orders(self.last_orders, prepared.credentials.flag)
+        QTimer.singleShot(10000, self.expire_order_receipts)
+
+    def expire_order_receipts(self):
+        self.update_orders(self.last_orders, self.orders_flag)
+
     def update_orders(self, orders, flag):
+        self.last_orders = list(orders)
+        self.orders_flag = flag
+        identities = {(bool(order.raw.get('_algo')), order.order_id) for order in orders}
+        self.pending_receipts = {key: value for key, value in self.pending_receipts.items()
+                                 if key not in identities and value[2] == flag and time.monotonic() - value[1] < 10}
+        orders = sorted(list(orders) + [value[0] for value in self.pending_receipts.values()],
+                        key=lambda order: (order.timestamp, order.order_id), reverse=True)
         scroll_position = self.orders_scroll.verticalScrollBar().value()
         for card in self.order_cards:
             self.orders_cards_layout.removeWidget(card)

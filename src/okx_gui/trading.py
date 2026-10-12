@@ -1,4 +1,5 @@
 """Explicitly confirmed order submission through python-okx; never auto-retry POSTs."""
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import uuid
@@ -89,14 +90,19 @@ def validate_with_account(account, draft, credentials):
     if (draft.action not in ('open', 'close') or draft.direction not in ('long', 'short') or
             draft.margin not in ('cross', 'isolated') or draft.order_type not in ('limit', 'market', 'trigger')):
         raise TradingError('订单参数无效。')
-    config = data(account.get_account_config(), '读取账户模式', credentials)
+    kind = 'SWAP' if draft.instrument.endswith('-SWAP') else 'FUTURES'
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        config_request = pool.submit(account.get_account_config)
+        rules_request = pool.submit(account.get_instruments, instType=kind, instId=draft.instrument)
+        positions_request = pool.submit(account.get_positions, instId=draft.instrument) if draft.action == 'close' else None
+        config = data(config_request.result(), '读取账户模式', credentials)
+        rows = data(rules_request.result(), '读取合约规则', credentials)
+        positions = data(positions_request.result(), '读取持仓', credentials) if positions_request else []
     if not config or config[0].get('acctLv') not in ('2', '3'):
         raise TradingError('当前仅支持合约模式或跨币种保证金模式，请在 OKX 检查账户模式。')
     mode = config[0].get('posMode')
     if mode not in ('net_mode', 'long_short_mode'):
         raise TradingError('无法确认账户持仓模式。')
-    kind = 'SWAP' if draft.instrument.endswith('-SWAP') else 'FUTURES'
-    rows = data(account.get_instruments(instType=kind, instId=draft.instrument), '读取合约规则', credentials)
     instrument = next((r for r in rows if r.get('instId') == draft.instrument), None)
     if not instrument or instrument.get('state') != 'live':
         raise TradingError('合约不存在或当前不可交易。')
@@ -136,7 +142,6 @@ def validate_with_account(account, draft, credentials):
         leverage = number(draft.leverage, '杠杆')
         if leverage < 1 or leverage > number(instrument.get('lever'), '合约杠杆上限'):
             raise TradingError(f"杠杆超出合约允许范围（最高 {instrument.get('lever')} ×）。")
-    positions = data(account.get_positions(instId=draft.instrument), '读取持仓', credentials)
     matching = [p for p in positions if p.get('instId') == draft.instrument and p.get('mgnMode') == draft.margin]
     if draft.action == 'close':
         available = Decimal(0)
@@ -166,6 +171,39 @@ def prepare_order(draft, credentials=None, account_factory=AccountAPI):
     return PreparedOrder(draft, credentials, mode, 'gui' + uuid.uuid4().hex[:29], contract_quantity=contract_quantity)
 
 
+def current_order_leverage(account, draft, mode, credentials):
+    rows = data(account.get_leverage(instId=draft.instrument, mgnMode=draft.margin), '读取当前杠杆', credentials)
+    rows = [row for row in rows if isinstance(row, dict) and row.get('instId') == draft.instrument
+            and row.get('mgnMode') == draft.margin]
+    if mode == 'long_short_mode' and draft.margin == 'isolated':
+        rows = [row for row in rows if row.get('posSide') == draft.direction]
+    elif mode == 'net_mode':
+        rows = [row for row in rows if row.get('posSide') in ('net', '', None)]
+    values = {number(row.get('lever'), '当前杠杆') for row in rows}
+    if len(values) != 1 or next(iter(values)) < 1:
+        raise TradingError('无法确认所选合约、保证金模式及方向的当前杠杆，尚未发送订单。')
+    return next(iter(values))
+
+
+def ensure_order_leverage(account, draft, mode, credentials):
+    target = number(draft.leverage, '目标杠杆')
+    current = current_order_leverage(account, draft, mode, credentials)
+    if current == target:
+        return
+    params = dict(instId=draft.instrument, lever=str(draft.leverage), mgnMode=draft.margin)
+    if draft.margin == 'isolated' and mode == 'long_short_mode':
+        params['posSide'] = draft.direction
+    response = account.set_leverage(**params)
+    if isinstance(response, dict) and str(response.get('code')) == '59669':
+        detail = credentials.redact(str(response.get('msg', '')))[:160]
+        raise TradingError(f'杠杆调整被 OKX 拒绝（59669）：当前 {current}×，目标 {target}×。'
+                           '本次订单未发送，不会自动撤销已有策略委托。请核查策略委托或交易机器人对杠杆调整的限制。'
+                           f'服务器说明：{detail}')
+    data(response, '设置杠杆', credentials)
+    if current_order_leverage(account, draft, mode, credentials) != target:
+        raise TradingError('杠杆调整后尚未确认目标倍数生效，本次订单未发送，请核对当前杠杆后重试。')
+
+
 def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, credentials_loader=load_credentials):
     credentials = prepared.credentials
     if time.monotonic() - prepared.prepared_at > 60:
@@ -182,10 +220,7 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
             if contract_quantity != prepared.contract_quantity:
                 raise TradingError('合约面值或数量规则已更改，请重新确认订单。')
             if draft.action == 'open':
-                params = dict(instId=draft.instrument, lever=str(draft.leverage), mgnMode=draft.margin)
-                if draft.margin == 'isolated' and mode == 'long_short_mode':
-                    params['posSide'] = draft.direction
-                data(account.set_leverage(**params), '设置杠杆', credentials)
+                ensure_order_leverage(account, draft, mode, credentials)
     except TradingError:
         raise
     except Exception:
