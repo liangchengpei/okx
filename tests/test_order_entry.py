@@ -186,3 +186,43 @@ def test_btc_leverage_matches_app_presets_without_arbitrary_values(qtbot):
     widget.apply_leverage_rules(widget.current_rules_key(), (Decimal('100'), Decimal('17')))
     assert widget.leverage.currentData() is None
     assert all(widget.leverage.itemData(i) != Decimal('17') for i in range(widget.leverage.count()))
+
+
+def test_trigger_order_draft_and_switching_back_to_market(qtbot):
+    widget = entry(qtbot)
+    widget.quantity.setText('1')
+    widget.price.setText('83001')
+    widget.order_type.setCurrentIndex(2)
+    assert not widget.trigger_price.isHidden()
+    with pytest.raises(ValueError, match='触发价格'):
+        widget.build_draft('long')
+    widget.trigger_price.setText('83000')
+    widget.trigger_source.setCurrentIndex(1)
+    draft = widget.build_draft('long')
+    assert draft.order_type == 'trigger'
+    assert draft.trigger_price == Decimal('83000')
+    assert draft.trigger_source == 'mark'
+    assert draft.price == Decimal('83001')
+    widget.execution_type.setCurrentIndex(1)
+    widget.price.setText('invalid')
+    assert widget.build_draft('long').price is None
+    assert not widget.price.isEnabled()
+    widget.order_type.setCurrentIndex(1)
+    draft = widget.build_draft('long')
+    assert draft.order_type == 'market' and draft.trigger_price is None
+    assert widget.trigger_price.isHidden()
+
+
+def test_trigger_confirmation_displays_conditions(qtbot):
+    from PySide6.QtWidgets import QLabel
+    widget = entry(qtbot)
+    widget.order_type.setCurrentIndex(2)
+    widget.quantity.setText('1')
+    widget.trigger_price.setText('83000')
+    widget.execution_type.setCurrentIndex(1)
+    widget.preview('long')
+    dialog = widget.findChildren(QDialog)[0]
+    texts = [label.text() for label in dialog.findChildren(QLabel)]
+    assert '计划委托' in texts and '83000' in texts and '最新价' in texts
+    assert '触发后委托' in texts and '市价' in texts
+    dialog.close()

@@ -70,7 +70,12 @@ def order_parameters(prepared):
                   side='buy' if buy else 'sell', ordType=draft.order_type,
                   sz=format(draft.quantity, 'f'), clOrdId=prepared.client_id,
                   posSide=draft.direction if prepared.position_mode == 'long_short_mode' else 'net')
-    if draft.order_type == 'limit':
+    if draft.order_type == 'trigger':
+        params['algoClOrdId'] = params.pop('clOrdId')
+        params['triggerPx'] = format(draft.trigger_price, 'f')
+        params['triggerPxType'] = draft.trigger_source
+        params['orderPx'] = format(draft.price, 'f') if draft.price is not None else '-1'
+    elif draft.order_type == 'limit':
         params['px'] = format(draft.price, 'f')
     if prepared.position_mode == 'net_mode' and draft.action == 'close':
         params['reduceOnly'] = True
@@ -79,7 +84,7 @@ def order_parameters(prepared):
 
 def validate_with_account(account, draft, credentials):
     if (draft.action not in ('open', 'close') or draft.direction not in ('long', 'short') or
-            draft.margin not in ('cross', 'isolated') or draft.order_type not in ('limit', 'market')):
+            draft.margin not in ('cross', 'isolated') or draft.order_type not in ('limit', 'market', 'trigger')):
         raise TradingError('订单参数无效。')
     config = data(account.get_account_config(), '读取账户模式', credentials)
     if not config or config[0].get('acctLv') not in ('2', '3'):
@@ -99,14 +104,24 @@ def validate_with_account(account, draft, credentials):
         raise TradingError('无法确认合约数量规则。')
     if quantity < minimum or quantity % lot != 0:
         raise TradingError(f'数量至少为 {minimum} 张，且必须是 {lot} 张的整数倍。')
-    maximum = instrument.get('maxLmtSz' if draft.order_type == 'limit' else 'maxMktSz')
+    maximum = instrument.get('maxLmtSz' if draft.price is not None else 'maxMktSz')
     if maximum and quantity > number(maximum, '最大委托数量'):
         raise TradingError(f'数量超过单笔委托上限 {maximum} 张。')
-    if draft.order_type == 'limit':
+    if draft.order_type == 'limit' or (draft.order_type == 'trigger' and draft.price is not None):
         tick = number(instrument.get('tickSz'), '价格步长')
         price = number(draft.price, '价格')
         if tick <= 0 or price <= 0 or price % tick != 0:
             raise TradingError(f'价格必须大于0，且必须是 {tick} 的整数倍。')
+    if draft.order_type == 'trigger':
+        if draft.trigger_source not in ('last', 'mark', 'index'):
+            raise TradingError('计划委托触发依据无效。')
+        trigger = number(draft.trigger_price, '触发价格')
+        tick = number(instrument.get('tickSz'), '价格步长')
+        if tick <= 0 or trigger <= 0 or trigger % tick != 0:
+            raise TradingError(f'触发价格必须大于0，且必须是 {tick} 的整数倍。')
+        maximum_trigger = instrument.get('maxTriggerSz')
+        if maximum_trigger and quantity > number(maximum_trigger, '计划委托数量上限'):
+            raise TradingError(f'数量超过计划委托上限 {maximum_trigger} 张。')
     if draft.action == 'open':
         leverage = number(draft.leverage, '杠杆')
         if leverage < 1 or leverage > number(instrument.get('lever'), '合约杠杆上限'):
@@ -172,13 +187,18 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
     try:
         with trade_factory(**options(credentials)) as trade:
             trade.timeout = httpx.Timeout(5)
+            is_trigger = draft.order_type == 'trigger'
+            id_key = 'algoId' if is_trigger else 'ordId'
             try:
-                response = trade.place_order(**order_parameters(prepared))
+                send = trade.place_algo_order if is_trigger else trade.place_order
+                response = send(**order_parameters(prepared))
             except Exception:
                 try:
-                    rows = data(trade.get_order(instId=draft.instrument, clOrdId=prepared.client_id), '查询订单结果', credentials)
-                    if rows and rows[0].get('ordId'):
-                        return str(rows[0]['ordId'])
+                    lookup = (trade.get_algo_order_details(algoClOrdId=prepared.client_id) if is_trigger else
+                              trade.get_order(instId=draft.instrument, clOrdId=prepared.client_id))
+                    rows = data(lookup, '查询订单结果', credentials)
+                    if rows and rows[0].get(id_key):
+                        return str(rows[0][id_key])
                 except Exception:
                     pass
                 raise SubmissionUncertain(f'订单结果未确认，请在 OKX 检查委托/成交记录。客户订单号：{prepared.client_id}。请勿重复下单。') from None
@@ -194,9 +214,9 @@ def submit_order(prepared, account_factory=AccountAPI, trade_factory=TradeAPI, c
             row = rows[0]
             if str(row['sCode']) != '0':
                 raise TradingError(credentials.redact(f"订单被拒绝（{row['sCode']}）：{row.get('sMsg', '')}")[:240])
-            if not row.get('ordId'):
+            if not row.get(id_key):
                 raise SubmissionUncertain(f'未返回订单号，请核对客户订单号 {prepared.client_id}。')
-            return str(row['ordId'])
+            return str(row[id_key])
     except (TradingError, SubmissionUncertain):
         raise
     except Exception:

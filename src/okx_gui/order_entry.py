@@ -30,6 +30,8 @@ class OrderDraft:
     order_type: str
     quantity: Decimal
     price: Decimal | None
+    trigger_price: Decimal | None = None
+    trigger_source: str = 'last'
 
 
 class OrderEntry(QWidget):
@@ -96,8 +98,21 @@ class OrderEntry(QWidget):
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         form.setVerticalSpacing(10)
         self.order_type = QComboBox()
-        self.order_type.addItems(['限价', '市价'])
+        self.order_type.addItems(['限价', '市价', '计划委托'])
         form.addRow('委托类型', self.order_type)
+        self.entry_form = form
+        self.trigger_price = QLineEdit()
+        self.trigger_price.setPlaceholderText('触发价格')
+        self.trigger_price.setAccessibleName('计划委托触发价格')
+        self.trigger_price.setStyleSheet('padding: 8px;')
+        form.addRow('触发价格', self.trigger_price)
+        self.trigger_source = QComboBox()
+        for label, value in [('最新价', 'last'), ('标记价', 'mark'), ('指数价', 'index')]:
+            self.trigger_source.addItem(label, value)
+        form.addRow('触发依据', self.trigger_source)
+        self.execution_type = QComboBox()
+        self.execution_type.addItems(['限价', '市价'])
+        form.addRow('触发后委托', self.execution_type)
         price_row = QWidget()
         price_layout = QHBoxLayout(price_row)
         price_layout.setContentsMargins(0, 0, 0, 0)
@@ -144,6 +159,7 @@ class OrderEntry(QWidget):
         layout.addStretch()
         self.action.currentChanged.connect(self.update_form)
         self.order_type.currentIndexChanged.connect(self.update_form)
+        self.execution_type.currentIndexChanged.connect(self.update_form)
         self.contract.currentTextChanged.connect(self.contract_changed)
         self.margin.currentIndexChanged.connect(self.load_leverage)
         self.quote_timer = QTimer(self)
@@ -170,6 +186,7 @@ class OrderEntry(QWidget):
     def contract_changed(self):
         # Never carry a BTC limit price into another contract.
         self.price.clear()
+        self.trigger_price.clear()
         self.quantity.clear()
         self.error.hide()
         self.refresh_quote()
@@ -249,12 +266,16 @@ class OrderEntry(QWidget):
     def refresh_quote(self):
         price = self.current_quote()
         self.quote.setText(f'最新价  {price}' if price is not None else '最新价  --（等待行情）')
-        self.latest.setEnabled(price is not None and self.order_type.currentIndex() == 0)
+        self.latest.setEnabled(price is not None and self.uses_limit_price())
 
     def fill_latest(self):
         price = self.current_quote()
         if price is not None:
             self.price.setText(str(price))
+
+    def uses_limit_price(self):
+        return (self.order_type.currentIndex() == 0 or
+                (self.order_type.currentIndex() == 2 and self.execution_type.currentIndex() == 0))
 
     def update_form(self):
         opening = self.action.currentIndex() == 0
@@ -262,7 +283,10 @@ class OrderEntry(QWidget):
         self.sell.setText(('开空' if opening else '平空') if self.trading else ('预览开空' if opening else '预览平空'))
         self.buy.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
         self.sell.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
-        limit = self.order_type.currentIndex() == 0
+        trigger = self.order_type.currentIndex() == 2
+        for widget in (self.trigger_price, self.trigger_source, self.execution_type):
+            self.entry_form.setRowVisible(widget, trigger)
+        limit = self.uses_limit_price()
         self.price.setEnabled(limit)
         self.price.setPlaceholderText('委托价格' if limit else '按市场价格成交')
         self.refresh_quote()
@@ -279,12 +303,15 @@ class OrderEntry(QWidget):
         if direction not in ('long', 'short'):
             raise ValueError('请选择有效方向。')
         quantity = amount(self.quantity.text(), '数量')
-        price = amount(self.price.text(), '价格') if self.order_type.currentIndex() == 0 else None
+        price = amount(self.price.text(), '价格') if self.uses_limit_price() else None
+        trigger = amount(self.trigger_price.text(), '触发价格') if self.order_type.currentIndex() == 2 else None
         if self.action.currentIndex() == 0 and (self.loaded_rules_key != self.current_rules_key() or self.leverage.currentData() is None):
             raise ValueError('请先成功读取该合约的杠杆规则，再选择倍数。')
         return OrderDraft(self.contract.currentText(), 'open' if self.action.currentIndex() == 0 else 'close',
                           direction, 'cross' if self.margin.currentIndex() == 0 else 'isolated',
-                          self.leverage.currentData() or Decimal(1), 'limit' if price is not None else 'market', quantity, price)
+                          self.leverage.currentData() or Decimal(1),
+                          'trigger' if trigger is not None else ('limit' if price is not None else 'market'),
+                          quantity, price, trigger, self.trigger_source.currentData())
 
     def preview(self, direction):
         if self.trading and (self.busy or self.blocked):
@@ -316,10 +343,14 @@ class OrderEntry(QWidget):
         for label, value in [('合约', draft.instrument), ('方向', action),
                              ('保证金模式', '全仓' if draft.margin == 'cross' else '逐仓'),
                              ('杠杆', f'{draft.leverage} ×' if draft.action == 'open' else '沿用现有持仓'),
-                             ('委托类型', '限价' if draft.order_type == 'limit' else '市价'),
+                             ('委托类型', {'limit': '限价', 'market': '市价', 'trigger': '计划委托'}[draft.order_type]),
                              ('价格', str(draft.price) if draft.price is not None else '市场价格'),
                              ('数量', f'{draft.quantity} 张')]:
             form.addRow(label, QLabel(value))
+        if draft.order_type == 'trigger':
+            form.addRow('触发价格', QLabel(str(draft.trigger_price)))
+            form.addRow('触发依据', QLabel({'last': '最新价', 'mark': '标记价', 'index': '指数价'}[draft.trigger_source]))
+            form.addRow('触发后委托', QLabel('限价' if draft.price is not None else '市价'))
         layout.addLayout(form)
         if prepared is not None:
             form.addRow('交易环境', QLabel(prepared.environment))
@@ -370,7 +401,7 @@ class OrderEntry(QWidget):
 
     def order_sent(self, order_id):
         self.quantity.clear()
-        self.error.setText(f'订单已受理：{order_id}（不代表已成交）')
+        self.error.setText(f'订单已受理：{order_id}（不代表已触发或成交）')
         self.error.setStyleSheet('color: #15966b;')
         self.error.show()
         self.submitted.emit(order_id)

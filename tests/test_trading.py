@@ -202,3 +202,43 @@ def test_leverage_rules_read_contract_ceiling_and_existing_setting():
     maximum, current = fetch_leverage_options(DRAFT.instrument, 'cross', CREDS, WithLeverage)
     assert maximum == Decimal('100') and current == Decimal('25')
     assert not Account.calls and not Trade.calls
+
+
+@pytest.mark.parametrize('price', [None, Decimal('83001')])
+def test_trigger_parameters_use_algo_client_id_and_market_sentinel(price):
+    draft = replace(DRAFT, order_type='trigger', trigger_price=Decimal('83000'), price=price, trigger_source='mark')
+    prepared = PreparedOrder(draft, CREDS, 'net_mode', 'guiTrigger123')
+    params = order_parameters(prepared)
+    assert params['ordType'] == 'trigger'
+    assert params['triggerPx'] == '83000' and params['triggerPxType'] == 'mark'
+    assert params['orderPx'] == ('-1' if price is None else '83001')
+    assert params['algoClOrdId'] == 'guiTrigger123'
+    assert 'clOrdId' not in params and 'px' not in params
+
+
+@pytest.mark.parametrize('trigger', [None, Decimal('0'), Decimal('83000.05')])
+def test_trigger_price_validated_against_tick_size(trigger):
+    with pytest.raises(TradingError, match='触发价格'):
+        prepare_order(replace(DRAFT, order_type='trigger', trigger_price=trigger), CREDS, Account)
+    assert not Account.calls and not Trade.calls
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_trigger_uses_algo_send_and_reconciliation(timeout):
+    calls = []
+    class AlgoTrade(Trade):
+        def place_order(self, **kwargs):
+            pytest.fail('Trigger order must never use regular order API')
+        def place_algo_order(self, **kwargs):
+            calls.append(('send', kwargs))
+            if timeout:
+                raise httpx.ReadTimeout('timeout')
+            return ok([{'sCode':'0', 'algoId':'algo123'}])
+        def get_algo_order_details(self, **kwargs):
+            calls.append(('lookup', kwargs))
+            return ok([{'algoId':'algo123'}])
+    prepared = prepare_order(replace(DRAFT, order_type='trigger', trigger_price=Decimal('83000')), CREDS, Account)
+    assert submit_order(prepared, Account, AlgoTrade, lambda: CREDS) == 'algo123'
+    assert [name for name, _ in calls] == (['send','lookup'] if timeout else ['send'])
+    if timeout:
+        assert calls[1][1] == {'algoClOrdId':prepared.client_id}
