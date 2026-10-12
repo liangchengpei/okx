@@ -42,6 +42,7 @@ class FundingPlot(QWidget):
         self.now = int(time.time() * 1000)
         self.plot_rect = QRectF()
         self.manual_span = None
+        self.y_scales = {'funding': 1.0, 'price': 1.0}
         self.setMinimumHeight(180)
         self.setMouseTracking(True)
         self.setAccessibleName('OKX 实时资金费率曲线')
@@ -61,10 +62,20 @@ class FundingPlot(QWidget):
             return
         # Keep the latest time at the right edge, as new samples arrive.
         steps = max(-20, min(20, delta / 120))
-        self.manual_span = max(60000, min(RETENTION_MS, int(self.span * 0.8 ** steps)))
+        if event.modifiers() & Qt.ControlModifier:
+            midpoint = self.plot_rect.center().x() if not self.plot_rect.isEmpty() else self.width() / 2
+            axis = 'funding' if event.position().x() < midpoint else 'price'
+            self.y_scales[axis] = max(0.001, min(1000.0, self.y_scales[axis] * 0.8 ** steps))
+        else:
+            self.manual_span = max(60000, min(RETENTION_MS, int(self.span * 0.8 ** steps)))
         self.setToolTip('')
         self.update()
         event.accept()
+
+    def scaled_y_range(self, axis, low, high):
+        center = (low + high) / 2
+        half = (high - low) * self.y_scales[axis] / 2
+        return center - half, center + half
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -89,7 +100,8 @@ class FundingPlot(QWidget):
         values = [float(point.rate * 100) for point in visible_points]
         low, high = min(values + [0]), max(values + [0])
         padding = max((high - low) * 0.12, 0.001)
-        low, high = low - padding, high + padding
+        low, high = self.scaled_y_range('funding', low - padding, high + padding)
+        price_low, price_high = self.scaled_y_range('price', price_low, price_high)
         for i in range(5):
             y = rect.bottom() - i * rect.height() / 4
             value = low + i * (high - low) / 4
@@ -181,7 +193,7 @@ class FundingChart(QFrame):
         heading = QHBoxLayout()
         title = QLabel('OKX 实时资金费率')
         title.setObjectName('muted')
-        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。')
+        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。Ctrl+滚轮缩放纵轴：左半侧为费率，右半侧为价格。')
         heading.addWidget(title)
         heading.addStretch()
         for exchange in EXCHANGES:

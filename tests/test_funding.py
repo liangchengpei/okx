@@ -271,3 +271,38 @@ def test_dual_axis_price_series_survives_refresh_and_zoom(qtbot):
     chart.resize(640, 280)
     assert not chart.plot.grab().isNull()
     assert chart.shutdown()
+
+
+def test_ctrl_wheel_zooms_each_y_axis_independently(qtbot):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    plot = chart.plot
+    plot.resize(640, 230)
+    plot.grab()
+    original_span = plot.span
+    def wheel(x, delta):
+        event = QWheelEvent(QPointF(x, 100), QPointF(x, 100), QPoint(),
+                            QPoint(0, delta), Qt.NoButton, Qt.ControlModifier,
+                            Qt.NoScrollPhase, False)
+        QApplication.sendEvent(plot, event)
+        assert event.isAccepted()
+    wheel(10, 120)
+    assert plot.y_scales == {'funding': 0.8, 'price': 1.0}
+    assert plot.scaled_y_range('funding', -1, 1) == (-0.8, 0.8)
+    wheel(630, -120)
+    assert plot.y_scales == {'funding': 0.8, 'price': 1.25}
+    assert plot.span == original_span
+    chart.refresh()
+    assert plot.y_scales == {'funding': 0.8, 'price': 1.25}
+    wheel(10, -120)
+    wheel(630, 120)
+    assert plot.y_scales == {'funding': 1.0, 'price': 1.0}
+    for _ in range(5):
+        wheel(10, 2400)
+        wheel(630, -2400)
+    assert plot.y_scales == {'funding': 0.001, 'price': 1000.0}
+    assert chart.shutdown()
