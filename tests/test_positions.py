@@ -197,3 +197,15 @@ def test_metadata_failure_keeps_explicit_contract_units():
     row = fetch_positions(Credentials('key', 'secret', 'phrase'), FakeAccount)[0]
     assert row.quantity_currency == '张'
     assert row.quantity_value == '-2.50'
+
+
+def test_api_domain_default_and_regional_configuration(tmp_path):
+    path = tmp_path / 'credentials.env'
+    base = 'apiKey=test\nsecretKey=test\npassphrase=test\nOKX_FLAG=1\n'
+    path.write_text(base)
+    assert load_credentials(path).domain == 'https://openapi.okx.com'
+    path.write_text(base + 'OKX_API_DOMAIN=https://eea.okx.com/\n')
+    assert load_credentials(path).domain == 'https://eea.okx.com'
+    path.write_text(base + 'OKX_API_DOMAIN=https://example.com\n')
+    with pytest.raises(PositionsError, match='OKX_API_DOMAIN'):
+        load_credentials(path)

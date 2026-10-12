@@ -23,6 +23,7 @@ class Credentials:
     secret_key: str = field(repr=False)
     passphrase: str = field(repr=False)
     flag: str = "0"
+    domain: str = "https://openapi.okx.com"
 
     def redact(self, text):
         for secret in (self.api_key, self.secret_key, self.passphrase):
@@ -67,7 +68,11 @@ def load_credentials(path=CREDENTIALS_PATH):
     flag = values.get("okxflag", values.get("flag", "0"))
     if flag not in ("0", "1"):
         raise PositionsError("OKX_FLAG 必须为 0（实盘）或 1（模拟盘）。")
-    return Credentials(key, secret, phrase, flag)
+    domain = values.get('okxapidomain', 'https://openapi.okx.com').rstrip('/')
+    if domain not in ('https://openapi.okx.com', 'https://www.okx.com',
+                      'https://eea.okx.com', 'https://us.okx.com', 'https://tr.okx.com'):
+        raise PositionsError('OKX_API_DOMAIN 必须为受支持的 OKX 官方 HTTPS API 地址。')
+    return Credentials(key, secret, phrase, flag, domain)
 
 
 @dataclass(frozen=True)
@@ -182,7 +187,7 @@ def fetch_positions(credentials, account_factory=AccountAPI, *, instrument_cache
     try:
         with account_factory(
             api_key=credentials.api_key, api_secret_key=credentials.secret_key,
-            passphrase=credentials.passphrase, flag=credentials.flag, debug=False,
+            passphrase=credentials.passphrase, flag=credentials.flag, domain=credentials.domain, debug=False,
         ) as account:
             account.timeout = httpx.Timeout(3.0)
             response = account.get_positions()

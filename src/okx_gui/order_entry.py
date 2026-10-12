@@ -1,12 +1,12 @@
-"""Local order drafting UI. No order or leverage API is called here."""
+"""Order drafting, review, and explicit background submission."""
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSpinBox, QTabBar, QVBoxLayout, QWidget,
+    QLineEdit, QMessageBox, QPushButton, QTabBar, QVBoxLayout, QWidget,
 )
 
 
@@ -26,15 +26,25 @@ class OrderDraft:
     action: str
     direction: str
     margin: str
-    leverage: int
+    leverage: Decimal | int
     order_type: str
     quantity: Decimal
     price: Decimal | None
 
 
 class OrderEntry(QWidget):
-    def __init__(self, parent=None):
+    submitted = Signal(str)
+
+    def __init__(self, parent=None, *, trading=False):
         super().__init__(parent)
+        self.trading = trading
+        self.busy = False
+        self.blocked = False
+        self.task = None
+        self.rules_task = None
+        self.rules_closing = False
+        self.rules_key = None
+        self.loaded_rules_key = None
         self.quotes = {}
         self.setStyleSheet('''
             QComboBox, QSpinBox { border: 1px solid #d8dadd; border-radius: 6px;
@@ -64,14 +74,23 @@ class OrderEntry(QWidget):
         self.margin.addItems(['全仓', '逐仓'])
         self.margin.setAccessibleName('保证金模式')
         modes.addWidget(self.margin, 1)
-        self.leverage = QSpinBox()
-        self.leverage.setRange(1, 125)
-        self.leverage.setValue(10)
-        self.leverage.setSuffix(' ×')
+        self.leverage = QComboBox()
+        self.leverage.setEditable(False)
         self.leverage.setAccessibleName('杠杆倍数')
-        self.leverage.setToolTip('本地订单草稿设置，未修改账户杠杆')
+        self.leverage.addItem('等待合约规则', None)
+        self.leverage.setEnabled(False)
         modes.addWidget(self.leverage, 1)
+        self.reload_leverage = QPushButton('↻')
+        self.reload_leverage.setAccessibleName('重新读取杠杆规则')
+        self.reload_leverage.setToolTip('重新读取所选合约的杠杆规则')
+        self.reload_leverage.setStyleSheet('padding: 6px;')
+        self.reload_leverage.clicked.connect(self.load_leverage)
+        modes.addWidget(self.reload_leverage)
         layout.addLayout(modes)
+        self.leverage_hint = QLabel('')
+        self.leverage_hint.setObjectName('muted')
+        self.leverage_hint.setWordWrap(True)
+        layout.addWidget(self.leverage_hint)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
@@ -109,6 +128,10 @@ class OrderEntry(QWidget):
         self.note = QLabel('仅预览，不发送订单')
         self.note.setObjectName('muted')
         layout.addWidget(self.note)
+        self.unlock = QPushButton('核对订单后解除锁定')
+        self.unlock.hide()
+        self.unlock.clicked.connect(self.unlock_submission)
+        layout.addWidget(self.unlock)
         buttons = QHBoxLayout()
         self.buy = QPushButton()
         self.sell = QPushButton()
@@ -122,6 +145,7 @@ class OrderEntry(QWidget):
         self.action.currentChanged.connect(self.update_form)
         self.order_type.currentIndexChanged.connect(self.update_form)
         self.contract.currentTextChanged.connect(self.contract_changed)
+        self.margin.currentIndexChanged.connect(self.load_leverage)
         self.quote_timer = QTimer(self)
         self.quote_timer.setInterval(1000)
         self.quote_timer.timeout.connect(self.refresh_quote)
@@ -150,6 +174,64 @@ class OrderEntry(QWidget):
         self.error.hide()
         self.refresh_quote()
         self.update_form()
+        self.load_leverage()
+
+    def current_rules_key(self):
+        return (self.contract.currentText(), 'cross' if self.margin.currentIndex() == 0 else 'isolated')
+
+    def load_leverage(self):
+        self.rules_key = self.current_rules_key()
+        self.loaded_rules_key = None
+        self.leverage.clear()
+        self.leverage.addItem('读取杠杆规则…', None)
+        self.leverage.setEnabled(False)
+        self.leverage_hint.setText('正在读取合约杠杆上限')
+        if not self.rules_key[0]:
+            self.leverage_hint.setText('请先选择合约')
+            return
+        if self.rules_task is None:
+            self.start_leverage_task()
+
+    def start_leverage_task(self):
+        from okx_gui.trading import LeverageTask, fetch_leverage_options
+        key = self.rules_key
+        task = LeverageTask(lambda: fetch_leverage_options(*key, should_stop=lambda: task.isInterruptionRequested()), self)
+        self.rules_task = task
+        task.completed.connect(lambda result: self.apply_leverage_rules(key, result))
+        task.failed.connect(lambda message, _: self.leverage_failed(key, message))
+        def finished():
+            self.rules_task = None
+            task.deleteLater()
+            if not self.rules_closing and self.rules_key != key and self.rules_key[0]:
+                self.start_leverage_task()
+        task.finished.connect(finished)
+        task.start()
+
+    def apply_leverage_rules(self, key, result):
+        if key != self.current_rules_key():
+            return
+        maximum, current = result
+        presets = (1, 2, 3, 5, 10, 20, 30, 50, 75, 100)
+        choices = [Decimal(value) for value in presets if value <= maximum]
+        self.leverage.clear()
+        for value in choices:
+            self.leverage.addItem(f'{value.normalize():f} ×', value)
+        if current is not None and current not in choices:
+            self.leverage.insertItem(0, '请选择倍数', None)
+            self.leverage.setCurrentIndex(0)
+        else:
+            self.leverage.setCurrentIndex(choices.index(current) if current in choices else 0)
+        self.loaded_rules_key = key
+        self.leverage.setEnabled(self.action.currentIndex() == 0)
+        self.leverage_hint.setText(f'合约上限 {maximum.normalize():f} × · 实际可用倍数受仓位档位限制')
+
+    def leverage_failed(self, key, message):
+        if key != self.current_rules_key():
+            return
+        self.leverage.clear()
+        self.leverage.addItem('规则读取失败', None)
+        self.leverage.setEnabled(False)
+        self.leverage_hint.setText(message)
 
     def update_quote(self, instrument, value):
         try:
@@ -176,15 +258,20 @@ class OrderEntry(QWidget):
 
     def update_form(self):
         opening = self.action.currentIndex() == 0
-        self.buy.setText('预览开多' if opening else '预览平多')
-        self.sell.setText('预览开空' if opening else '预览平空')
-        self.buy.setEnabled(bool(self.contract.currentText()))
-        self.sell.setEnabled(bool(self.contract.currentText()))
+        self.buy.setText(('开多' if opening else '平多') if self.trading else ('预览开多' if opening else '预览平多'))
+        self.sell.setText(('开空' if opening else '平空') if self.trading else ('预览开空' if opening else '预览平空'))
+        self.buy.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
+        self.sell.setEnabled(bool(self.contract.currentText()) and not self.busy and not self.blocked)
         limit = self.order_type.currentIndex() == 0
         self.price.setEnabled(limit)
         self.price.setPlaceholderText('委托价格' if limit else '按市场价格成交')
         self.refresh_quote()
-        self.error.hide()
+        if self.trading:
+            self.note.setText('发送前确认订单及交易环境')
+            self.leverage.setToolTip('确认开仓时设置账户杠杆；平仓不修改杠杆')
+        self.leverage.setEnabled(opening and self.loaded_rules_key == self.current_rules_key())
+        if not self.busy and not self.blocked:
+            self.error.hide()
 
     def build_draft(self, direction):
         if not self.contract.currentText():
@@ -193,11 +280,15 @@ class OrderEntry(QWidget):
             raise ValueError('请选择有效方向。')
         quantity = amount(self.quantity.text(), '数量')
         price = amount(self.price.text(), '价格') if self.order_type.currentIndex() == 0 else None
+        if self.action.currentIndex() == 0 and (self.loaded_rules_key != self.current_rules_key() or self.leverage.currentData() is None):
+            raise ValueError('请先成功读取该合约的杠杆规则，再选择倍数。')
         return OrderDraft(self.contract.currentText(), 'open' if self.action.currentIndex() == 0 else 'close',
                           direction, 'cross' if self.margin.currentIndex() == 0 else 'isolated',
-                          self.leverage.value(), 'limit' if price is not None else 'market', quantity, price)
+                          self.leverage.currentData() or Decimal(1), 'limit' if price is not None else 'market', quantity, price)
 
     def preview(self, direction):
+        if self.trading and (self.busy or self.blocked):
+            return
         try:
             draft = self.build_draft(direction)
         except ValueError as exc:
@@ -205,25 +296,106 @@ class OrderEntry(QWidget):
             self.error.show()
             return
         self.error.hide()
+        if self.trading:
+            if self.busy or self.blocked:
+                return
+            from okx_gui.trading import prepare_order
+            self.start_task(lambda: prepare_order(draft), self.show_confirmation)
+            return
+        self.show_confirmation(None, draft)
+
+    def show_confirmation(self, prepared, draft=None):
+        draft = prepared.draft if prepared is not None else draft
+        direction = draft.direction
         dialog = QDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.setWindowTitle('订单预览')
+        dialog.setWindowTitle('确认订单 · ' + prepared.environment if prepared is not None else '订单预览')
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         action = ('开' if draft.action == 'open' else '平') + ('多' if direction == 'long' else '空')
         for label, value in [('合约', draft.instrument), ('方向', action),
-                             ('保证金模式', self.margin.currentText()), ('杠杆', f'{draft.leverage} ×'),
-                             ('委托类型', self.order_type.currentText()),
+                             ('保证金模式', '全仓' if draft.margin == 'cross' else '逐仓'),
+                             ('杠杆', f'{draft.leverage} ×' if draft.action == 'open' else '沿用现有持仓'),
+                             ('委托类型', '限价' if draft.order_type == 'limit' else '市价'),
                              ('价格', str(draft.price) if draft.price is not None else '市场价格'),
                              ('数量', f'{draft.quantity} 张')]:
             form.addRow(label, QLabel(value))
         layout.addLayout(form)
-        note = QLabel('本次仅预览，不发送订单。\n合约最小数量、步长和价格精度尚未校验；\n杠杆及保证金模式未应用到账户。')
+        if prepared is not None:
+            form.addRow('交易环境', QLabel(prepared.environment))
+            form.addRow('API 地址', QLabel(prepared.credentials.domain))
+            form.addRow('持仓模式', QLabel('双向持仓' if prepared.position_mode == 'long_short_mode' else '单向持仓'))
+        note = QLabel(('确认后发送至 OKX ' + prepared.environment + '。' +
+                       ('开仓将按所选倍数设置账户杠杆。' if draft.action == 'open' else '仅平仓，不修改杠杆。'))
+                      if prepared is not None else '本次仅预览，不发送订单。')
         note.setWordWrap(True)
         note.setObjectName('muted')
         layout.addWidget(note)
-        close = QDialogButtonBox(QDialogButtonBox.Close)
+        close = QDialogButtonBox(QDialogButtonBox.Cancel if prepared is not None else QDialogButtonBox.Close)
+        if prepared is not None:
+            confirm = close.addButton('确认发送 · ' + prepared.environment, QDialogButtonBox.AcceptRole)
+            def send():
+                if self.busy or self.blocked:
+                    return
+                from okx_gui.trading import submit_order
+                confirm.setEnabled(False)
+                dialog.accept()
+                self.start_task(lambda: submit_order(prepared), self.order_sent)
+            confirm.clicked.connect(send)
         close.rejected.connect(dialog.close)
         layout.addWidget(close)
         dialog.setModal(True)
         dialog.show()
+
+    def start_task(self, operation, completed):
+        from okx_gui.trading import TradingTask
+        self.busy = True
+        self.buy.setEnabled(False)
+        self.sell.setEnabled(False)
+        self.note.setText('正在处理订单…')
+        task = TradingTask(operation, self)
+        self.task = task
+        task.completed.connect(completed)
+        task.failed.connect(self.order_failed)
+        def finished():
+            if self.task is task:
+                self.task = None
+                self.busy = False
+                self.buy.setEnabled(bool(self.contract.currentText()) and not self.blocked)
+                self.sell.setEnabled(bool(self.contract.currentText()) and not self.blocked)
+                self.note.setText('发送前确认订单及交易环境')
+            task.deleteLater()
+        task.finished.connect(finished)
+        task.start()
+
+    def order_sent(self, order_id):
+        self.quantity.clear()
+        self.error.setText(f'订单已受理：{order_id}（不代表已成交）')
+        self.error.setStyleSheet('color: #15966b;')
+        self.error.show()
+        self.submitted.emit(order_id)
+
+    def order_failed(self, message, uncertain):
+        self.error.setStyleSheet('color: #c34747;')
+        self.error.setText(message)
+        self.error.show()
+        if uncertain:
+            self.blocked = True
+            self.unlock.show()
+
+    def unlock_submission(self):
+        if QMessageBox.question(self, '核对订单', '已在 OKX 核对委托和成交记录，确认可以继续下单？',
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            self.blocked = False
+            self.unlock.hide()
+            self.update_form()
+
+    def shutdown(self):
+        # Never terminate a thread that may be sending a financial transaction.
+        if self.task is not None and self.task.isRunning():
+            return False
+        self.rules_closing = True
+        if self.rules_task is not None and self.rules_task.isRunning():
+            self.rules_task.requestInterruption()
+            return self.rules_task.wait(6000)
+        return True

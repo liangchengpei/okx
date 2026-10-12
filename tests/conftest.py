@@ -20,3 +20,13 @@ def offline_liquidation_workers(monkeypatch):
     from okx_gui.funding import FundingWorker
     monkeypatch.setattr(FundingWorker, "start", lambda self: None)
     monkeypatch.setattr(LiquidationWorker, "start", lambda self: None)
+
+
+@pytest.fixture(autouse=True)
+def offline_leverage_rules(monkeypatch):
+    from decimal import Decimal
+    from okx_gui.trading import LeverageTask
+    def start(task):
+        task.completed.emit((Decimal('100'), Decimal('10')))
+        task.finished.emit()
+    monkeypatch.setattr(LeverageTask, 'start', start)

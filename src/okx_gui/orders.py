@@ -159,7 +159,7 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
 
     try:
         with trade_factory(api_key=credentials.api_key, api_secret_key=credentials.secret_key,
-                           passphrase=credentials.passphrase, flag=credentials.flag, debug=False) as trade:
+                           passphrase=credentials.passphrase, flag=credentials.flag, domain=credentials.domain, debug=False) as trade:
             trade.timeout = httpx.Timeout(3)
             pages(trade.get_order_list, 'ordId')
             for kind in ALGO_TYPES:
@@ -167,7 +167,7 @@ def fetch_orders(credentials, trade_factory=TradeAPI, account_factory=AccountAPI
         missing = {row['instId']: row.get('instType') for row in rows if row.get('instId') not in instruments and row.get('instType') in ('SWAP', 'FUTURES', 'OPTION')}
         if missing:
             with account_factory(api_key=credentials.api_key, api_secret_key=credentials.secret_key,
-                                 passphrase=credentials.passphrase, flag=credentials.flag, debug=False) as account:
+                                 passphrase=credentials.passphrase, flag=credentials.flag, domain=credentials.domain, debug=False) as account:
                 account.timeout = httpx.Timeout(3)
                 for instrument, kind in missing.items():
                     check_stop()

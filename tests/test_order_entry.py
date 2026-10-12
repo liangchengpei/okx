@@ -85,3 +85,104 @@ def test_preview_opens_local_summary_only(qtbot):
     assert len(dialogs) == 1
     assert dialogs[0].windowTitle() == '订单预览'
     dialogs[0].close()
+
+
+def test_live_entry_requires_confirmation_before_sending(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    from okx_gui.positions import Credentials
+    from okx_gui.trading import PreparedOrder
+    widget = OrderEntry(trading=True)
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.quantity.setText('1')
+    widget.price.setText('82600')
+    calls = []
+    def prepare(draft):
+        calls.append('prepare')
+        return PreparedOrder(draft, Credentials('test', 'secret', 'phrase', '1'), 'net_mode', 'gui123')
+    def send(prepared):
+        calls.append('send')
+        assert prepared.credentials.flag == '1'
+        return '123'
+    monkeypatch.setattr('okx_gui.trading.prepare_order', prepare)
+    monkeypatch.setattr('okx_gui.trading.submit_order', send)
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    assert calls == ['prepare']
+    dialog = widget.findChildren(QDialog)[0]
+    assert '模拟盘' in dialog.windowTitle()
+    buttons = dialog.findChildren(QPushButton)
+    confirm = next(b for b in buttons if b.text().startswith('确认发送'))
+    with qtbot.waitSignal(widget.submitted):
+        confirm.click()
+    qtbot.waitUntil(lambda: not widget.busy)
+    assert calls == ['prepare', 'send']
+    assert widget.quantity.text() == ''
+    assert '已受理' in widget.error.text()
+
+
+def test_cancel_confirmation_never_sends(qtbot, monkeypatch):
+    from okx_gui.positions import Credentials
+    from okx_gui.trading import PreparedOrder
+    widget = OrderEntry(trading=True)
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.quantity.setText('1')
+    widget.price.setText('82600')
+    monkeypatch.setattr('okx_gui.trading.prepare_order', lambda draft: PreparedOrder(
+        draft, Credentials('test', 'secret', 'phrase', '1'), 'net_mode', 'gui123'))
+    monkeypatch.setattr('okx_gui.trading.submit_order', lambda _: pytest.fail('Canceled order must not be sent'))
+    widget.preview('long')
+    qtbot.waitUntil(lambda: not widget.busy)
+    widget.findChildren(QDialog)[0].reject()
+    assert widget.quantity.text() == '1'
+
+
+def test_uncertain_order_blocks_repeat_submission(qtbot, monkeypatch):
+    widget = OrderEntry(trading=True)
+    qtbot.addWidget(widget)
+    widget.set_contracts(['BTC-USDT-SWAP'])
+    widget.price.setText('82600')
+    widget.quantity.setText('1')
+    widget.order_failed('结果未确认', True)
+    widget.update_form()
+    assert not widget.buy.isEnabled() and not widget.sell.isEnabled()
+    monkeypatch.setattr('okx_gui.trading.prepare_order', lambda _: pytest.fail('Must remain blocked'))
+    widget.preview('long')
+    assert not widget.unlock.isHidden()
+
+
+def test_leverage_choices_follow_selected_contract_and_ignore_old_response(qtbot):
+    widget = entry(qtbot)
+    widget.apply_leverage_rules(widget.current_rules_key(), (Decimal('75'), Decimal('20')))
+    assert not widget.leverage.isEditable()
+    assert widget.leverage.count() == 9
+    assert widget.leverage.currentData() == Decimal('20')
+    old_key = widget.current_rules_key()
+    widget.contract.setCurrentIndex(1)
+    widget.apply_leverage_rules(widget.current_rules_key(), (Decimal('10'), Decimal('5')))
+    widget.apply_leverage_rules(old_key, (Decimal('125'), Decimal('100')))
+    assert widget.leverage.count() == 5
+    assert widget.leverage.currentData() == Decimal('5')
+
+
+def test_leverage_load_failure_blocks_open_but_not_close(qtbot):
+    widget = entry(qtbot)
+    widget.quantity.setText('1')
+    widget.price.setText('82600')
+    widget.loaded_rules_key = None
+    widget.leverage_failed(widget.current_rules_key(), '连接失败')
+    with pytest.raises(ValueError, match='杠杆规则'):
+        widget.build_draft('long')
+    widget.action.setCurrentIndex(1)
+    assert widget.build_draft('long').action == 'close'
+    assert not widget.leverage.isEnabled()
+
+
+def test_btc_leverage_matches_app_presets_without_arbitrary_values(qtbot):
+    widget = entry(qtbot)
+    expected = [Decimal(i) for i in (1, 2, 3, 5, 10, 20, 30, 50, 75, 100)]
+    assert [widget.leverage.itemData(i) for i in range(widget.leverage.count())] == expected
+    widget.apply_leverage_rules(widget.current_rules_key(), (Decimal('100'), Decimal('17')))
+    assert widget.leverage.currentData() is None
+    assert all(widget.leverage.itemData(i) != Decimal('17') for i in range(widget.leverage.count()))

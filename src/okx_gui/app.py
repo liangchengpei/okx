@@ -355,11 +355,17 @@ class MainWindow(QMainWindow):
         heading = layout.takeAt(0).widget()
         layout.takeAt(0)
         layout.addWidget(heading)
-        self.order_entry = OrderEntry()
+        self.order_entry = OrderEntry(trading=True)
+        self.order_entry.submitted.connect(self.order_submitted)
         self.order_entry_scroll = QScrollArea()
         self.order_entry_scroll.setWidgetResizable(True)
         self.order_entry_scroll.setWidget(self.order_entry)
         layout.addWidget(self.order_entry_scroll, 1)
+
+    def order_submitted(self, order_id):
+        self.refresh_positions()
+        if self.orders_worker:
+            self.orders_worker.refresh()
 
     def setup_positions_panel(self):
         layout = self.positions_panel.layout()
@@ -754,6 +760,10 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if not self.order_entry.shutdown():
+            self.order_entry.note.setText('订单请求处理中，请等待结果后关闭窗口')
+            event.ignore()
+            return
         for row in self.rows.values():
             if not row.chart_area.shutdown() or not row.funding_area.shutdown():
                 event.ignore()

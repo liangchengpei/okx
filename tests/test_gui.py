@@ -151,6 +151,7 @@ def test_entry_point_runs_event_loop():
     result = subprocess.run(
         [sys.executable, "-c", "from PySide6.QtWidgets import QApplication; "
          "from PySide6.QtCore import QTimer; import okx_gui.app as gui; "
+         "from okx_gui.trading import LeverageTask; LeverageTask.start=lambda self: None; "
          "original=gui.MainWindow; gui.MainWindow=lambda: original(auto_start=False, auto_start_positions=False, auto_start_orders=False); "
          "app=QApplication([]); QTimer.singleShot(100, app.quit); raise SystemExit(gui.main())"],
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
