@@ -105,9 +105,11 @@ class PriceLadder:
             if self.once_fired:
                 return False
             self.once_fired = True
+            self.movement = "up" if side == "high" else "down"
             return True
         boundary = self.lower if side == "low" else self.upper
         if self.side != side:
+            self.movement = "up" if side == "high" else "down"
             self.side = side
             steps = (abs(price - boundary) / self.step).to_integral_value(rounding=ROUND_FLOOR)
             self.level = boundary + (steps * self.step if side == "high" else -steps * self.step)
@@ -116,6 +118,7 @@ class PriceLadder:
         steps = (abs(distance) / self.step).to_integral_value(rounding=ROUND_FLOOR)
         if not steps:
             return False
+        self.movement = "up" if distance > 0 else "down"
         self.level += steps * self.step if distance > 0 else -steps * self.step
         return True
 
@@ -224,16 +227,12 @@ class SpeechService(QObject):
         self._speaking = False
         name = instrument.split("-", 1)[0]
         price = spoken_price(price, self.chinese)
-        action = {"high": "突破", "low": "跌破"}.get(movement)
+        movement = {"high": "up", "low": "down"}.get(movement, movement)
         if movement in ("up", "down"):
             change = "上涨到" if movement == "up" else "下跌到"
             english_change = "rises to" if movement == "up" else "falls to"
             text = (f"行情有变，{name}价格{change} {price}" if self.chinese
                     else f"Market update. {name}, price {english_change} {price}")
-        elif action:
-            english_action = "breaks above" if movement == "high" else "breaks below"
-            text = (f"{name}，价格{action} {price}" if self.chinese
-                    else f"{name}, price {english_action} {price}")
         else:
             text = (f"行情有变。{name}，价格 {price}" if self.chinese
                     else f"Market update. {name}, price {price}")

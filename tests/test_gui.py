@@ -214,7 +214,7 @@ def test_range_validation_dialogs_and_volume(qtbot, monkeypatch):
     row.voice_button.click()
     assert row.ladder is not None
     assert window.speech.calls == [(row.instrument, "83000")]
-    assert window.speech.movements == ["high"]
+    assert window.speech.movements == ["up"]
     assert not row.low_input.isEnabled()
     row.voice_button.click()
     assert row.low_input.isEnabled()
@@ -394,7 +394,7 @@ def test_inside_reporting_with_directional_boundary_notices(qtbot):
     for price in ("159", "160", "150", "201", "210", "190", "180", "99", "90", "100"):
         worker.ticker.emit(row.instrument, price, None)
     assert [p for _, p in window.speech.calls] == ["160", "150", "201", "210", "180", "99", "90"]
-    assert window.speech.movements == ["up", "down", "high", "high", "down", "low", "low"]
+    assert window.speech.movements == ["up", "down", "up", "up", "down", "down", "down"]
     assert [side for _, side in window.speech.triggered] == ["high", "high", "low", "low"]
     assert window.speech.cancelled.count(row.instrument) == 2
     assert "范围内按间隔" in row.voice_state.text()
@@ -457,7 +457,7 @@ def test_start_below_lower_bound_triggers_single_price_and_emergency(qtbot):
     row.voice_button.click()
     assert row.ladder is not None
     assert window.speech.calls == [(row.instrument, "82000")]
-    assert window.speech.movements == ["low"]
+    assert window.speech.movements == ["down"]
     assert window.speech.triggered == [(row.instrument, "low")]
     window.worker.ticker.emit(row.instrument, "81900", None)
     assert len(window.speech.calls) == 1

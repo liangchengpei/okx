@@ -872,7 +872,7 @@ class MainWindow(QMainWindow):
         if row.ladder.feed(price):
             label = {"high": "突破上限", "low": "跌破下限"}.get(side, "范围内")
             row.voice_state.setText(f"{label} · 最近播报 {price}")
-            self.speech.announce(inst, price, side=side, movement=side or row.ladder.movement)
+            self.speech.announce(inst, price, side=side, movement=row.ladder.movement)
         elif row.ladder and row.ladder.side is None:
             row.voice_state.setText(self.range_voice_status(row.ladder))
 

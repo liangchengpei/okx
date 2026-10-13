@@ -114,7 +114,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     assert len(service.tts.calls) == 1
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == 2)
-    assert service.tts.calls[-1] == "ETH, price breaks above three zero one zero"
+    assert service.tts.calls[-1] == "Market update. ETH, price rises to three zero one zero"
     service.announce("ETH-USDT-SWAP", "3020")
     service.cancel("ETH-USDT-SWAP", interrupt=False)
     assert service.current == "ETH-USDT-SWAP"
@@ -288,11 +288,11 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service.set_emergency("BTC", True, side="low")
     service.announce("BTC", "83000", side="high", movement="high")
     assert not service.emergency_active
-    assert service.tts.calls[-1] == "BTC，价格突破 八 三 零 零 零"
+    assert service.tts.calls[-1] == "行情有变，BTC价格上涨到 八 三 零 零 零"
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current is None)
     service.announce("BTC", "82000", side="low", movement="low")
-    assert service.tts.calls[-1] == "BTC，价格跌破 八 二 零 零 零"
+    assert service.tts.calls[-1] == "行情有变，BTC价格下跌到 八 二 零 零 零"
     assert ("BTC", "low") in service.emergency_active
     service.set_emergency("BTC", True, side="high")
     service.announce("BTC", "84000", side="high")
@@ -442,3 +442,22 @@ def test_inside_direction_tracks_step_base_and_resets_after_reentry():
     assert ladder.feed('82801')
     assert not ladder.feed('82750')  # Reentry establishes a fresh interval base.
     assert ladder.feed('82650') and ladder.movement == 'down'
+
+
+@pytest.mark.parametrize('prices,movements', [
+    (['201', '220', '210'], ['up', 'up', 'down']),
+    (['99', '80', '90'], ['down', 'down', 'up']),
+])
+def test_outside_announcements_track_actual_step_direction(prices, movements):
+    ladder = PriceLadder('100', '200', '10', inside_enabled=True)
+    ladder.validate_current('150')
+    for price, movement in zip(prices, movements):
+        assert ladder.feed(price)
+        assert ladder.movement == movement
+
+
+@pytest.mark.parametrize('price,movement', [('201', 'up'), ('99', 'down')])
+def test_outside_once_announcement_direction(price, movement):
+    ladder = PriceLadder('100', '200', '', allow_once=True)
+    assert ladder.feed(price)
+    assert ladder.movement == movement
