@@ -341,3 +341,38 @@ def test_left_drag_pans_time_and_both_y_axes_and_double_click_restores(qtbot):
     assert plot.view_end is None
     assert plot.y_offsets == {'funding': 0.0, 'price': 0.0}
     assert chart.shutdown()
+
+
+def test_left_drag_allows_future_space_and_refresh_preserves_view(qtbot):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    chart.resize(800, 300)
+    chart.show()
+    chart.plot.grab()
+    plot = chart.plot
+    original_now = plot.now
+    original_points = list(plot.points)
+    original_prices = list(plot.price_points)
+    origin = plot.plot_rect.center()
+    target = origin - QPointF(plot.plot_rect.width() / 4, 0)
+
+    def mouse(kind, position, button, buttons):
+        QApplication.sendEvent(plot, QMouseEvent(kind, position, position, button, buttons, Qt.NoModifier))
+
+    mouse(QEvent.MouseButtonPress, origin, Qt.LeftButton, Qt.LeftButton)
+    mouse(QEvent.MouseMove, target, Qt.NoButton, Qt.LeftButton)
+    mouse(QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
+    assert plot.end_time == pytest.approx(original_now + plot.span / 4)
+    assert plot.y_offsets == {'funding': 0.0, 'price': 0.0}
+    frozen = plot.end_time
+    chart.advance_time()
+    assert plot.end_time == frozen
+    assert plot.points == original_points and plot.price_points == original_prices
+    assert plot.grab().width() > 0
+    mouse(QEvent.MouseButtonDblClick, origin, Qt.LeftButton, Qt.LeftButton)
+    assert plot.view_end is None and plot.end_time == plot.now
+    assert chart.shutdown()

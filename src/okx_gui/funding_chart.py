@@ -196,7 +196,7 @@ class FundingPlot(QWidget):
             origin, end_time, offsets, ranges = self._drag
             delta = event.position() - origin
             self.view_end = max(self.now - RETENTION_MS + self.span,
-                                min(self.now, end_time - delta.x() / self.plot_rect.width() * self.span))
+                                end_time - delta.x() / self.plot_rect.width() * self.span)
             for axis in ('funding', 'price'):
                 low, high = ranges[axis]
                 self.y_offsets[axis] = offsets[axis] + delta.y() / self.plot_rect.height() * (high - low)
@@ -205,6 +205,9 @@ class FundingPlot(QWidget):
             return
         if self.plot_rect.contains(event.position()) and (self.points or self.price_points):
             timestamp = self.end_time - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
+            if timestamp > self.now:
+                self.setToolTip('')
+                return
             lines = ['附近实时采样（北京时间）']
             for exchange in EXCHANGES:
                 points = self.points
