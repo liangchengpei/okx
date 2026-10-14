@@ -2,8 +2,9 @@
 from bisect import bisect_left
 from datetime import datetime
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import time
+import math
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
@@ -71,11 +72,30 @@ def price_color(previous, current):
     return UP_COLOR if current > previous else DOWN_COLOR if current < previous else PRICE_COLOR
 
 
+def format_price(value):
+    text = format(value, ',f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def axis_price_label(value, step):
+    # Keep large-price axes compact, but distinguish ticks on small-price assets.
+    decimals = max(1, -math.floor(math.log10(abs(step)))) if step else 1
+    return f'{value:,.{decimals}f}'
+
+
+def visible_extremes(candles, start, end):
+    visible = [c for c in candles if start <= c.timestamp <= end]
+    if not visible:
+        return None
+    return max(visible, key=lambda c: c.high), min(visible, key=lambda c: c.low)
+
+
 class FundingPlot(QWidget):
     def __init__(self):
         super().__init__()
         self.price_points = []
         self.minutes = 1
+        self.live_price = None
         self.now = int(time.time() * 1000)
         self.plot_rect = QRectF()
         self.manual_span = None
@@ -89,11 +109,15 @@ class FundingPlot(QWidget):
         self.setAccessibleName('OKX 实时价格K线')
 
     @property
+    def latest_price(self):
+        return self.live_price if self.live_price is not None else (
+            self.price_points[-1].price if self.price_points else None)
+
+    @property
     def span(self):
         if self.manual_span is not None:
             return self.manual_span
-        earliest = self.price_points[0].timestamp if self.price_points else self.now
-        return min(RETENTION_MS, max(3600000, self.now - earliest))
+        return 3600000  # Default view stays at the latest hour, regardless of cache length.
 
     @property
     def end_time(self):
@@ -161,12 +185,15 @@ class FundingPlot(QWidget):
         font = self.font()
         font.setPointSizeF(max(8, font.pointSizeF() - 1))
         painter.setFont(font)
-        rect = QRectF(28, 24, max(1, self.width() - 120), max(1, self.height() - 66))
+        latest = self.latest_price
+        badge_width = max(88, painter.fontMetrics().horizontalAdvance(format_price(latest)) + 22) if latest is not None else 88
+        rect = QRectF(28, 24, max(1, self.width() - 36 - badge_width), max(1, self.height() - 66))
         self.plot_rect = rect
         span = self.span
         end_time = self.end_time
         prices = self.visible_prices(end_time, span)
-        price_values = [float(value) for candle in prices for value in (candle.low, candle.high)]
+        price_values = [float(value) for candle in prices if end_time - span <= candle.timestamp <= end_time
+                        for value in (candle.low, candle.high)]
         price_low, price_high = (min(price_values), max(price_values)) if price_values else (0, 1)
         price_padding = max((price_high - price_low) * 0.12, abs(price_high) * 0.0001, 0.000001)
         price_low, price_high = price_low - price_padding, price_high + price_padding
@@ -179,9 +206,13 @@ class FundingPlot(QWidget):
             painter.setPen(QColor('#7b818a'))
             painter.setPen(QColor(PRICE_COLOR))
             price_value = price_low + i * (price_high - price_low) / 4
-            label = f'{price_value:,.6f}'.rstrip('0').rstrip('.') if prices else '--'
-            painter.drawText(QRectF(rect.right() + 6, y - 9, 82, 18),
-                             Qt.AlignLeft | Qt.AlignVCenter, label)
+            label = axis_price_label(price_value, (price_high - price_low) / 4) if prices else '--'
+            latest_y = (rect.bottom() - (float(latest) - price_low) / (price_high - price_low) * rect.height()
+                        if latest is not None else None)
+            badge_center = max(rect.top() + 10, min(latest_y, rect.bottom() - 10)) if latest_y is not None else None
+            if badge_center is None or abs(y - badge_center) >= 22:
+                painter.drawText(QRectF(rect.right() + 6, y - 9, 82, 18),
+                                 Qt.AlignLeft | Qt.AlignVCenter, label)
         painter.setPen(QColor('#7b818a'))
         for i in range(5):
             timestamp = end_time - span + span * i / 4
@@ -205,6 +236,44 @@ class FundingPlot(QWidget):
             else:
                 painter.fillRect(QRectF(x - bar_width / 2, top, bar_width, height), color)
         painter.restore()
+        extremes = visible_extremes(prices, end_time - span, end_time)
+        if extremes:
+            for candle, value, is_high in ((extremes[0], extremes[0].high, True),
+                                           (extremes[1], extremes[1].low, False)):
+                x = rect.left() + (candle.timestamp - end_time + span) / span * rect.width()
+                y = price_y(value)
+                if not rect.top() <= y <= rect.bottom():
+                    continue
+                text = format_price(value)
+                width = painter.fontMetrics().horizontalAdvance(text) + 8
+                to_right = x + 20 + width <= rect.right()
+                tip = x + 18 if to_right else x - 18
+                label_x = tip if to_right else tip - width
+                label_x = max(rect.left(), min(label_x, rect.right() - width))
+                label_y = y - 22 if is_high else y + 4
+                label_y = max(rect.top(), min(label_y, rect.bottom() - 20))
+                painter.setPen(QPen(QColor('#444b55'), 1))
+                painter.drawLine(QPointF(x, y), QPointF(tip, y))
+                label_rect = QRectF(label_x, label_y, width, 20)
+                painter.fillRect(label_rect, QColor(255, 255, 255, 225))
+                painter.drawText(label_rect, Qt.AlignCenter, text)
+        if latest is not None:
+            y = price_y(latest)
+            in_range = rect.top() <= y <= rect.bottom()
+            badge_y = max(rect.top() + 10, min(y, rect.bottom() - 10))
+            painter.setPen(QPen(QColor('#56616f'), 1, Qt.DashLine))
+            if in_range and self.price_points:
+                last_bucket = self.price_points[-1].timestamp // (self.minutes * 60000) * self.minutes * 60000
+                candle_x = rect.left() + (last_bucket - end_time + span) / span * rect.width()
+                line_start = candle_x + bar_width / 2
+                if rect.left() <= candle_x <= rect.right() and line_start < rect.right():
+                    painter.drawLine(QPointF(line_start, y), QPointF(rect.right(), y))
+            painter.setPen(QPen(QColor('#56616f'), 1))
+            badge = QRectF(rect.right() + 3, badge_y - 10, badge_width - 5, 20)
+            painter.setBrush(QColor('white'))
+            painter.drawRoundedRect(badge, 3, 3)
+            prefix = '' if in_range else ('↑ ' if y < rect.top() else '↓ ')
+            painter.drawText(badge, Qt.AlignCenter, prefix + format_price(latest))
         if not self.price_points:
             painter.setPen(QColor('#7b818a'))
             painter.drawText(rect, Qt.AlignCenter, '等待实时价格，采集后逐步形成K线')
@@ -281,6 +350,16 @@ class FundingChart(QFrame):
         self.refresh_timer.setInterval(1000)
         self.refresh_timer.timeout.connect(self.advance_time)
         self.refresh_timer.start()
+
+    def set_price(self, value):
+        self.worker.set_price(value)
+        try:
+            price = Decimal(str(value))
+        except InvalidOperation:
+            return
+        if price.is_finite() and price > 0:
+            self.plot.live_price = price
+            self.plot.update()
 
     def change_interval(self):
         self.plot.minutes = self.interval.currentData()

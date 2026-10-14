@@ -442,3 +442,65 @@ def test_candle_wicks_include_intraperiod_extremes_and_current_close():
     points.append(PricePoint(65000, Decimal('90')))
     updated = aggregate_prices(points, 1)[0]
     assert (updated.open, updated.high, updated.low, updated.close) == (100, 120, 80, 90)
+
+
+def test_visible_extremes_exclude_offscreen_candles_and_use_wicks():
+    from okx_gui.funding_chart import PriceCandle, visible_extremes, format_price
+    candles = [PriceCandle(0, 1, 999, 0, 1),
+               PriceCandle(60000, 100, 120, 80, 110),
+               PriceCandle(120000, 110, 115, 70, 100)]
+    high, low = visible_extremes(candles, 60000, 120000)
+    assert high.timestamp == 60000 and high.high == 120
+    assert low.timestamp == 120000 and low.low == 70
+    assert visible_extremes(candles, 180000, 240000) is None
+    assert format_price(Decimal('83079.900')) == '83,079.9'
+    assert format_price(Decimal('0.000000123')) == '0.000000123'
+
+
+def test_live_price_annotation_updates_before_sampling_and_stays_live_when_panned(qtbot):
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    chart.resize(800, 330)
+    chart.plot.price_points = [PricePoint(chart.plot.now - 60000, Decimal('82000'))]
+    assert chart.plot.latest_price == Decimal('82000')
+    chart.set_price('82112.0123')
+    assert chart.plot.latest_price == Decimal('82112.0123')
+    assert len(chart.plot.price_points) == 1
+    chart.plot.view_end = chart.plot.now - 3600000
+    assert chart.plot.latest_price == Decimal('82112.0123')
+    chart.set_price('NaN')
+    assert chart.plot.latest_price == Decimal('82112.0123')
+    assert not chart.plot.grab().isNull()
+    assert chart.shutdown()
+
+
+@pytest.mark.parametrize('value,step,expected', [
+    (82137.923456, 43.211, '82,137.9'),
+    (163.472222, 0.8, '163.5'),
+    (0.001234567, 0.0002, '0.0012'),
+    (82600.1234, 0.01, '82,600.12'),
+])
+def test_price_axis_labels_use_compact_scale_aware_precision(value, step, expected):
+    from okx_gui.funding_chart import axis_price_label
+    assert axis_price_label(value, step) == expected
+
+
+def test_default_price_view_is_last_hour_even_with_seven_days_of_cache(qtbot):
+    from okx_gui.funding_chart import FundingChart
+    now = int(time.time() * 1000)
+    PriceStore().save('BTC-USDT-SWAP', [
+        PricePoint(now - RETENTION_MS + 60000, Decimal('80000')),
+        PricePoint(now - 1000, Decimal('82000')),
+    ], now)
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    assert len(chart.plot.price_points) == 2
+    assert chart.plot.span == 3600000
+    assert chart.plot.end_time == chart.plot.now
+    chart.advance_time()
+    assert chart.plot.span == 3600000
+    chart.plot.manual_span = 7200000
+    chart.refresh()
+    assert chart.plot.span == 7200000
+    assert chart.shutdown()
