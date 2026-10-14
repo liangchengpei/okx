@@ -18,6 +18,8 @@ def isolated_application_data(monkeypatch, tmp_path):
 def offline_liquidation_workers(monkeypatch):
     from okx_gui.liquidation_feed import LiquidationWorker
     from okx_gui.funding import FundingWorker
+    from okx_gui.trade_volume_feed import TradeVolumeWorker
+    monkeypatch.setattr(TradeVolumeWorker, "start", lambda self: None)
     monkeypatch.setattr(FundingWorker, "start", lambda self: None)
     monkeypatch.setattr(LiquidationWorker, "start", lambda self: None)
 

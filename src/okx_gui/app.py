@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from okx_gui.funding_chart import FundingChart
-from okx_gui.liquidation_chart import LiquidationChart
+from okx_gui.trade_volume_chart import TradeVolumeChart
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
@@ -44,7 +44,7 @@ QPushButton#remove { background: transparent; color: #777; font-size: 20px; padd
 QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
 QFrame#row { border: 0; }
-QFrame#liquidationChart, QFrame#fundingChart { border: 1px solid #858585; background: white; }
+QFrame#tradeVolumeChart, QFrame#fundingChart { border: 1px solid #858585; background: white; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
 QScrollArea { border: 0; background: transparent; }
 QSplitter#mainSplitter::handle:vertical { background: #e0e1e3; border: 0; }
@@ -123,7 +123,7 @@ class ContractRow(QFrame):
         self.remove_button.clicked.connect(lambda: remove(instrument))
         header.addWidget(self.remove_button)
         layout.addLayout(header)
-        self.chart_area = LiquidationChart(instrument)
+        self.chart_area = TradeVolumeChart(instrument)
         layout.addWidget(self.chart_area, 1)
         self.funding_area = FundingChart(instrument)
         layout.addWidget(self.funding_area, 1)
@@ -722,7 +722,7 @@ class MainWindow(QMainWindow):
 
     def remove_contract(self, inst):
         if not self.rows[inst].chart_area.shutdown() or not self.rows[inst].funding_area.shutdown():
-            self.show_error("强平连接正在关闭，请稍后删除合约")
+            self.show_error("成交行情连接正在关闭，请稍后删除合约")
             return
         for side in ("low", "high"):
             self.speech.set_emergency(inst, False, side=side)
