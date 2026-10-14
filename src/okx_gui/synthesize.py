@@ -20,8 +20,8 @@ def split_contract_name(text):
 
 
 def split_price_announcement(text):
-    """Separate the Chinese notice without losing English contract pronunciation."""
-    for prefix in ("行情有变。", "行情有变，"):
+    """Separate the English notice and contract from the Chinese price."""
+    for prefix in ("Price Alert. ",):
         if text.startswith(prefix):
             letters, price_text = split_contract_name(text[len(prefix):])
             if letters:
@@ -154,8 +154,8 @@ def main():
 
     @lru_cache(maxsize=1)
     def notice_audio():
-        # Restore the fourth tone lost by eSpeak IPA in this fixed notice.
-        return chinese_audio("行情有[[pˈiɛ51n]]。")
+        # Use the same cached English voice as the contract name.
+        return english_audio("Price Alert.", voice.config.sample_rate)
 
     def synthesize(text, output):
         notice, letters, chinese_text = split_price_announcement(text)

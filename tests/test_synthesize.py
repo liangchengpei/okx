@@ -102,12 +102,12 @@ def test_join_handles_silent_segments_and_does_not_modify_input():
 
 def test_notice_preserves_english_name_and_chinese_price():
     from okx_gui.synthesize import split_price_announcement
-    assert split_price_announcement("行情有变。BTC，价格 八 二 六 零 零 点 零 五") == (
-        "行情有变。", "B T C", "价格 八 二 六 零 零 点 零 五"
+    assert split_price_announcement("Price Alert. BTC，价格 八 二 六 零 零 点 零 五") == (
+        "Price Alert. ", "B T C", "价格 八 二 六 零 零 点 零 五"
     )
     assert split_price_announcement("BTC，价格 一") == ("", "B T C", "价格 一")
     assert split_price_announcement("情况紧急") == ("", None, "情况紧急")
-    assert split_price_announcement("行情有变。其他内容") == ("", None, "行情有变。其他内容")
+    assert split_price_announcement("Price Alert. 其他内容") == ("", None, "Price Alert. 其他内容")
 
 
 def test_server_corrects_notice_tone_once_without_changing_prices(monkeypatch, tmp_path, capsys):
@@ -134,15 +134,20 @@ def test_server_corrects_notice_tone_once_without_changing_prices(monkeypatch, t
     monkeypatch.setitem(sys.modules, "piper", SimpleNamespace(
         PiperVoice=FakeVoice, SynthesisConfig=lambda **kwargs: kwargs,
     ))
-    monkeypatch.setattr(synthesize, "english_name_audio", lambda *args: b"\x01\x00" * 100)
+    english_calls = []
+    def english_audio(text, sample_rate):
+        english_calls.append(text)
+        return b"\x01\x00" * 100
+    monkeypatch.setattr(synthesize, "english_name_audio", english_audio)
     monkeypatch.setattr(sys, "argv", ["synthesize", "--model", str(tmp_path / "fake.onnx"), "--server"])
-    texts = ["行情有变。BTC，价格 一", "行情有变。BTC，价格 二", "BTC，价格突破 三", "BTC，价格跌破 四", "行情有变，BTC价格上涨到 五", "行情有变，BTC价格下跌到 六", "情况紧急"]
+    texts = ["Price Alert. BTC，价格 一", "Price Alert. BTC，价格 二", "BTC，价格突破 三", "BTC，价格跌破 四", "Price Alert. BTC价格上涨到 五", "Price Alert. BTC价格下跌到 六", "情况紧急"]
     monkeypatch.setattr(sys, "stdin", io.StringIO("".join(
         json.dumps({"id": i, "text": text, "output": str(tmp_path / f"{i}.wav")}) + "\n"
         for i, text in enumerate(texts)
     )))
     synthesize.main()
-    assert calls == ["行情有[[pˈiɛ51n]]。", "价格 一", "价格 二", "价格突[[phˈo5↓]] 三", "价格跌[[phˈo5↓]] 四", "价格上涨到 五", "价格下跌到 六", "情况紧急"]
+    assert calls == ["价格 一", "价格 二", "价格突[[phˈo5↓]] 三", "价格跌[[phˈo5↓]] 四", "价格上涨到 五", "价格下跌到 六", "情况紧急"]
+    assert english_calls.count("Price Alert.") == 1
     responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert responses == [{"ready": True}] + [{"id": i, "ok": True} for i in range(len(texts))]
 
@@ -159,8 +164,8 @@ def test_boundary_notice_keeps_english_contract_pronunciation(action):
 def test_inside_direction_preserves_english_name_and_chinese_price(action):
     from okx_gui.synthesize import split_price_announcement
 
-    assert split_price_announcement(f'行情有变，BTC价格{action} 八 二 六 零 零') == (
-        '行情有变，', 'B T C', f'价格{action} 八 二 六 零 零')
+    assert split_price_announcement(f'Price Alert. BTC价格{action} 八 二 六 零 零') == (
+        'Price Alert. ', 'B T C', f'价格{action} 八 二 六 零 零')
 
 
 @pytest.mark.parametrize('digit', ['五', '九'])

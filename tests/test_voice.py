@@ -100,7 +100,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     monkeypatch.setattr(voice, "QTextToSpeech", FakeTTS)
     service = voice.SpeechService(prefer_native=False, max_pending=2)
     service.announce("BTC-USDT-SWAP", "82600")
-    assert service.tts.calls == ["Market update. BTC, price eight two six zero zero"]
+    assert service.tts.calls == ["Price Alert. BTC, price eight two six zero zero"]
     service.announce("ETH-USDT-SWAP", "3000")
     service.announce("ETH-USDT-SWAP", "3010", movement="high")
     service.announce("SOL-USDT-SWAP", "100")
@@ -114,7 +114,7 @@ def test_speech_queue_waits_evicts_oldest_and_cancels(monkeypatch, qtbot):
     assert len(service.tts.calls) == 1
     service.tts.stop()
     qtbot.waitUntil(lambda: len(service.tts.calls) == 2)
-    assert service.tts.calls[-1] == "Market update. ETH, price rises to three zero one zero"
+    assert service.tts.calls[-1] == "Price Alert. ETH, price rises to three zero one zero"
     service.announce("ETH-USDT-SWAP", "3020")
     service.cancel("ETH-USDT-SWAP", interrupt=False)
     assert service.current == "ETH-USDT-SWAP"
@@ -265,7 +265,7 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     assert service.current == service.EMERGENCY  # Finish current audio first.
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == "ETH")
-    assert service.tts.calls[-1] == "行情有变。ETH，价格 三 零 零 零"
+    assert service.tts.calls[-1] == "Price Alert. ETH，价格 三 零 零 零"
     service.cancel("ETH", interrupt=False)
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current == service.EMERGENCY)
@@ -288,11 +288,11 @@ def test_emergency_loops_after_alarm_prioritizes_prices_and_stops(monkeypatch, q
     service.set_emergency("BTC", True, side="low")
     service.announce("BTC", "83000", side="high", movement="high")
     assert not service.emergency_active
-    assert service.tts.calls[-1] == "行情有变，BTC价格上涨到 八 三 零 零 零"
+    assert service.tts.calls[-1] == "Price Alert. BTC价格上涨到 八 三 零 零 零"
     service.tts.stop()
     qtbot.waitUntil(lambda: service.current is None)
     service.announce("BTC", "82000", side="low", movement="low")
-    assert service.tts.calls[-1] == "行情有变，BTC价格下跌到 八 二 零 零 零"
+    assert service.tts.calls[-1] == "Price Alert. BTC价格下跌到 八 二 零 零 零"
     assert ("BTC", "low") in service.emergency_active
     service.set_emergency("BTC", True, side="high")
     service.announce("BTC", "84000", side="high")
@@ -430,7 +430,7 @@ def test_inside_direction_announcement_text(movement, action, price_text):
         tts=SimpleNamespace(state=lambda: QTextToSpeech.State.Ready, say=calls.append),
     )
     SpeechService._next(service)
-    assert calls == [f'行情有变，BTC价格{action} {price_text}']
+    assert calls == [f'Price Alert. BTC价格{action} {price_text}']
 
 
 def test_inside_direction_tracks_step_base_and_resets_after_reentry():

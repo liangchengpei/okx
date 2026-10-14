@@ -231,11 +231,11 @@ class SpeechService(QObject):
         if movement in ("up", "down"):
             change = "上涨到" if movement == "up" else "下跌到"
             english_change = "rises to" if movement == "up" else "falls to"
-            text = (f"行情有变，{name}价格{change} {price}" if self.chinese
-                    else f"Market update. {name}, price {english_change} {price}")
+            text = (f"Price Alert. {name}价格{change} {price}" if self.chinese
+                    else f"Price Alert. {name}, price {english_change} {price}")
         else:
-            text = (f"行情有变。{name}，价格 {price}" if self.chinese
-                    else f"Market update. {name}, price {price}")
+            text = (f"Price Alert. {name}，价格 {price}" if self.chinese
+                    else f"Price Alert. {name}, price {price}")
         self.tts.say(text)
 
     def _state_changed(self, state):
