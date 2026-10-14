@@ -1,18 +1,20 @@
-"""OKX live funding-rate curve."""
+"""OKX live price curve (legacy module name preserves application imports)."""
 from bisect import bisect_left
 from datetime import datetime
+from dataclasses import dataclass
+from decimal import Decimal
 import time
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from okx_gui.funding import EXCHANGES, RETENTION_MS, FundingStore, FundingWorker, PriceStore
+from okx_gui.funding import RETENTION_MS, FundingWorker, PriceStore, PricePoint
 
-COLORS = {'okx': '#2679d8'}
-NAMES = {'okx': 'OKX'}
-PRICE_COLOR = '#e58a28'
+PRICE_COLOR = '#7b818a'
+UP_COLOR = '#15966b'
+DOWN_COLOR = '#d94b55'
 ZONE = ZoneInfo('Asia/Shanghai')
 
 
@@ -34,29 +36,63 @@ def render_points(points, width):
     return result
 
 
+@dataclass(frozen=True)
+class PriceCandle:
+    timestamp: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+
+    @property
+    def price(self):
+        return self.close
+
+
+def aggregate_prices(points, minutes):
+    """OHLC from ordered local price samples; missing intervals stay empty."""
+    if minutes not in (1, 15):
+        raise ValueError('价格聚合周期只支持1或15分钟')
+    interval = minutes * 60000
+    rows = []
+    for point in points:
+        start = point.timestamp // interval * interval
+        if rows and rows[-1][0] == start:
+            row = rows[-1]
+            row[2] = max(row[2], point.price)
+            row[3] = min(row[3], point.price)
+            row[4] = point.price
+        else:
+            rows.append([start, point.price, point.price, point.price, point.price])
+    return [PriceCandle(*row) for row in rows]
+
+
+def price_color(previous, current):
+    return UP_COLOR if current > previous else DOWN_COLOR if current < previous else PRICE_COLOR
+
+
 class FundingPlot(QWidget):
     def __init__(self):
         super().__init__()
-        self.points = []
         self.price_points = []
+        self.minutes = 1
         self.now = int(time.time() * 1000)
         self.plot_rect = QRectF()
         self.manual_span = None
-        self.y_scales = {'funding': 1.0, 'price': 1.0}
-        self.y_offsets = {'funding': 0.0, 'price': 0.0}
-        self.y_ranges = {'funding': (-1, 1), 'price': (0, 1)}
+        self.y_scales = {'price': 1.0}
+        self.y_offsets = {'price': 0.0}
+        self.y_ranges = {'price': (0, 1)}
         self.view_end = None
         self._drag = None
         self.setMinimumHeight(180)
         self.setMouseTracking(True)
-        self.setAccessibleName('OKX 实时资金费率曲线')
+        self.setAccessibleName('OKX 实时价格K线')
 
     @property
     def span(self):
         if self.manual_span is not None:
             return self.manual_span
-        earliest = min(self.points[0].timestamp if self.points else self.now,
-                       self.price_points[0].timestamp if self.price_points else self.now)
+        earliest = self.price_points[0].timestamp if self.price_points else self.now
         return min(RETENTION_MS, max(3600000, self.now - earliest))
 
     @property
@@ -84,7 +120,7 @@ class FundingPlot(QWidget):
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.view_end = None
-            self.y_offsets = {'funding': 0.0, 'price': 0.0}
+            self.y_offsets = {'price': 0.0}
             self.update()
             event.accept()
         else:
@@ -98,8 +134,7 @@ class FundingPlot(QWidget):
         # Keep the latest time at the right edge, as new samples arrive.
         steps = max(-20, min(20, delta / 120))
         if event.modifiers() & Qt.ControlModifier:
-            midpoint = self.plot_rect.center().x() if not self.plot_rect.isEmpty() else self.width() / 2
-            axis = 'funding' if event.position().x() < midpoint else 'price'
+            axis = 'price'
             self.y_scales[axis] = max(0.001, min(1000.0, self.y_scales[axis] * 0.8 ** steps))
         else:
             self.manual_span = max(60000, min(RETENTION_MS, int(self.span * 0.8 ** steps)))
@@ -112,6 +147,13 @@ class FundingPlot(QWidget):
         half = (high - low) * self.y_scales[axis] / 2
         return center - half, center + half
 
+    def visible_prices(self, end_time, span):
+        interval = self.minutes * 60000
+        start = (end_time - span) // interval * interval - interval
+        first = bisect_left(self.price_points, start, key=lambda p: p.timestamp)
+        last = bisect_left(self.price_points, min(end_time, self.now) + 1, key=lambda p: p.timestamp)
+        return aggregate_prices(self.price_points[first:last], self.minutes)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -119,33 +161,22 @@ class FundingPlot(QWidget):
         font = self.font()
         font.setPointSizeF(max(8, font.pointSizeF() - 1))
         painter.setFont(font)
-        rect = QRectF(72, 24, max(1, self.width() - 164), max(1, self.height() - 66))
+        rect = QRectF(28, 24, max(1, self.width() - 120), max(1, self.height() - 66))
         self.plot_rect = rect
         span = self.span
         end_time = self.end_time
-        start_index = max(0, bisect_left(self.points, end_time - span,
-                                       key=lambda point: point.timestamp) - 1)
-        visible_points = render_points(self.points[start_index:bisect_left(self.points, end_time + 1, key=lambda p: p.timestamp)], rect.width())
-        price_start = max(0, bisect_left(self.price_points, end_time - span,
-                                       key=lambda point: point.timestamp) - 1)
-        prices = render_points(self.price_points[price_start:bisect_left(self.price_points, end_time + 1, key=lambda p: p.timestamp)], rect.width())
-        price_values = [float(point.price) for point in prices]
+        prices = self.visible_prices(end_time, span)
+        price_values = [float(value) for candle in prices for value in (candle.low, candle.high)]
         price_low, price_high = (min(price_values), max(price_values)) if price_values else (0, 1)
         price_padding = max((price_high - price_low) * 0.12, abs(price_high) * 0.0001, 0.000001)
         price_low, price_high = price_low - price_padding, price_high + price_padding
-        values = [float(point.rate * 100) for point in visible_points]
-        low, high = min(values + [0]), max(values + [0])
-        padding = max((high - low) * 0.12, 0.001)
-        low, high = self.scaled_y_range('funding', low - padding, high + padding)
         price_low, price_high = self.scaled_y_range('price', price_low, price_high)
-        self.y_ranges = {'funding': (low, high), 'price': (price_low, price_high)}
+        self.y_ranges = {'price': (price_low, price_high)}
         for i in range(5):
             y = rect.bottom() - i * rect.height() / 4
-            value = low + i * (high - low) / 4
             painter.setPen(QPen(QColor('#e9ebee'), 1))
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor('#7b818a'))
-            painter.drawText(QRectF(0, y - 9, 66, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:.4f}%')
             painter.setPen(QColor(PRICE_COLOR))
             price_value = price_low + i * (price_high - price_low) / 4
             label = f'{price_value:,.6f}'.rstrip('0').rstrip('.') if prices else '--'
@@ -159,37 +190,24 @@ class FundingPlot(QWidget):
             painter.drawText(QRectF(x - 24, rect.bottom() + 4, 48, 34), Qt.AlignCenter, label)
         painter.save()
         painter.setClipRect(rect.adjusted(-2, -2, 2, 2))
-        for exchange in EXCHANGES:
-            points = [point for point in visible_points if point.exchange == exchange]
-            if not points:
-                continue
-            path = QPainterPath()
-            painter.setPen(QPen(QColor(COLORS[exchange]), 1.6))
-            painter.setBrush(QColor(COLORS[exchange]))
-            for i, point in enumerate(points):
-                x = rect.left() + (point.timestamp - end_time + span) / span * rect.width()
-                y = rect.bottom() - (float(point.rate * 100) - low) / (high - low) * rect.height()
-                position = QPointF(x, y)
-                if i and point.timestamp - points[i - 1].timestamp <= 5 * 60000:
-                    path.lineTo(position)
-                else:
-                    path.moveTo(position)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPath(path)
-        price_path = QPainterPath()
-        for i, point in enumerate(prices):
-            x = rect.left() + (point.timestamp - end_time + span) / span * rect.width()
-            y = rect.bottom() - (float(point.price) - price_low) / (price_high - price_low) * rect.height()
-            if i and point.timestamp - prices[i - 1].timestamp <= 5 * 60000:
-                price_path.lineTo(QPointF(x, y))
+        bar_width = max(1.0, min(18.0, self.minutes * 60000 / span * rect.width() * 0.65))
+        def price_y(value):
+            return rect.bottom() - (float(value) - price_low) / (price_high - price_low) * rect.height()
+        for candle in prices:
+            x = rect.left() + (candle.timestamp - end_time + span) / span * rect.width()
+            color = QColor(price_color(candle.open, candle.close))
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(QPointF(x, price_y(candle.high)), QPointF(x, price_y(candle.low)))
+            top = min(price_y(candle.open), price_y(candle.close))
+            height = abs(price_y(candle.close) - price_y(candle.open))
+            if height < 1:
+                painter.drawLine(QPointF(x - bar_width / 2, top), QPointF(x + bar_width / 2, top))
             else:
-                price_path.moveTo(QPointF(x, y))
-        painter.setPen(QPen(QColor(PRICE_COLOR), 1.5))
-        painter.drawPath(price_path)
+                painter.fillRect(QRectF(x - bar_width / 2, top, bar_width, height), color)
         painter.restore()
-        if not self.points and not self.price_points:
+        if not self.price_points:
             painter.setPen(QColor('#7b818a'))
-            painter.drawText(rect, Qt.AlignCenter, '等待实时资金费率，采集后逐步形成曲线')
+            painter.drawText(rect, Qt.AlignCenter, '等待实时价格，采集后逐步形成K线')
 
     def mouseMoveEvent(self, event):
         if self._drag is not None:
@@ -197,33 +215,29 @@ class FundingPlot(QWidget):
             delta = event.position() - origin
             self.view_end = max(self.now - RETENTION_MS + self.span,
                                 end_time - delta.x() / self.plot_rect.width() * self.span)
-            for axis in ('funding', 'price'):
+            for axis in ('price',):
                 low, high = ranges[axis]
                 self.y_offsets[axis] = offsets[axis] + delta.y() / self.plot_rect.height() * (high - low)
             self.update()
             event.accept()
             return
-        if self.plot_rect.contains(event.position()) and (self.points or self.price_points):
+        if self.plot_rect.contains(event.position()) and self.price_points:
             timestamp = self.end_time - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
             if timestamp > self.now:
                 self.setToolTip('')
                 return
-            lines = ['附近实时采样（北京时间）']
-            for exchange in EXCHANGES:
-                points = self.points
-                if points:
-                    index = bisect_left(points, timestamp, key=lambda point: point.timestamp)
-                    nearby = points[max(0, index - 1):index + 1]
-                    point = min(nearby, key=lambda point: abs(point.timestamp - timestamp))
-                    date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M:%S')
-                    lines.append(f'{NAMES[exchange]}：{point.rate * 100:.6f}% · {date}')
-            if self.price_points:
-                index = bisect_left(self.price_points, timestamp, key=lambda point: point.timestamp)
-                point = min(self.price_points[max(0, index - 1):index + 1],
-                            key=lambda point: abs(point.timestamp - timestamp))
-                date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M:%S')
-                lines.append(f'价格：{point.price} · {date}')
-            self.setToolTip('\n'.join(lines))
+            prices = self.visible_prices(self.end_time, self.span)
+            bucket_start = int(timestamp // (self.minutes * 60000)) * self.minutes * 60000
+            index = bisect_left(prices, bucket_start, key=lambda p: p.timestamp)
+            if index < len(prices) and prices[index].timestamp == bucket_start:
+                point = prices[index]
+                date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
+                self.setToolTip(f'{self.minutes}分钟K线 · {date}（北京时间）\n'
+                                f'开：{point.open}　高：{point.high}\n低：{point.low}　收：{point.close}'
+                                + ('\n当前区间尚未结束' if bucket_start + self.minutes * 60000 > self.now else ''))
+            else:
+                self.setToolTip('')
+
         else:
             self.setToolTip('')
         super().mouseMoveEvent(event)
@@ -235,45 +249,43 @@ class FundingChart(QFrame):
         self.instrument = instrument
         self.setObjectName('fundingChart')
         self.setMinimumHeight(250)
-        self.setAccessibleName(f'{instrument} 资金费率曲线')
-        self.store = FundingStore()
-        self.price_store = PriceStore(self.store.path)
+        self.setAccessibleName(f'{instrument} 实时价格K线')
+        self.price_store = PriceStore()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 4)
         layout.setSpacing(4)
         heading = QHBoxLayout()
-        title = QLabel('OKX 实时资金费率')
+        title = QLabel('OKX 价格K线')
         title.setObjectName('muted')
-        title.setToolTip('每秒采集当前费率，按本机采样时间直接绘制，不分桶、不累加。保留最近7天，时间轴随已采集数据自动展开，默认最少显示1小时；滚轮向上放大、向下缩小，缩放范围1分钟至7天。Ctrl+滚轮缩放纵轴：左半侧为费率，右半侧为价格。按住左键平移，双击恢复最新时间和纵轴位置。')
+        title.setToolTip('每秒采样实时价格，按1或15分钟聚合开、高、低、收；实体为开盘到收盘，上下影线为最高和最低价。收盘高于开盘为绿色，低于为红色，持平灰色。基于本地每秒采样，不是交易所完整成交K线；当前区间持续更新。保留最近7天。滚轮缩放时间轴，Ctrl+滚轮缩放价格纵轴。按住左键平移，可拖至未来空白时间；双击恢复最新时间和纵轴位置。')
         heading.addWidget(title)
         heading.addStretch()
-        for exchange in EXCHANGES:
-            legend = QLabel('━ 费率（左轴）')
-            legend.setStyleSheet(f'color: {COLORS[exchange]}; font-size: 12px;')
+        for text, color in (('━ 上涨', UP_COLOR), ('━ 下跌', DOWN_COLOR)):
+            legend = QLabel(text)
+            legend.setStyleSheet(f'color: {color}; font-size: 12px;')
             heading.addWidget(legend)
-        price_legend = QLabel('━ 价格（右轴）')
-        price_legend.setStyleSheet(f'color: {PRICE_COLOR}; font-size: 12px;')
-        heading.addWidget(price_legend)
+        self.interval = QComboBox()
+        self.interval.setAccessibleName('价格K线聚合周期')
+        for minutes in (1, 15):
+            self.interval.addItem(f'{minutes} 分钟', minutes)
+        heading.addWidget(self.interval)
         layout.addLayout(heading)
-        self.statuses = {exchange: '加载中' for exchange in EXCHANGES}
-        self.status_label = QLabel()
-        self.status_label.setObjectName('muted')
-        self.status_label.setWordWrap(True)
-        self.status_label.setMaximumHeight(38)
-        layout.addWidget(self.status_label)
         self.plot = FundingPlot()
+        self.interval.currentIndexChanged.connect(self.change_interval)
         layout.addWidget(self.plot, 1)
         self.refresh()
-        self.worker = FundingWorker(instrument, self.store.path, self)
-        self.worker.sampled.connect(self.append_sample)
+        self.worker = FundingWorker(instrument, self.price_store.path, self)
         self.worker.price_sampled.connect(self.append_price)
-        self.worker.status.connect(self.update_status)
         self.worker.start()
-        self.update_status('okx', '加载中')
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(1000)
         self.refresh_timer.timeout.connect(self.advance_time)
         self.refresh_timer.start()
+
+    def change_interval(self):
+        self.plot.minutes = self.interval.currentData()
+        self.plot.setToolTip('')
+        self.plot.update()
 
     def append_price(self, point):
         points = self.plot.price_points
@@ -284,26 +296,8 @@ class FundingChart(QFrame):
             points.insert(index, point)
         self.advance_time()
 
-    def append_sample(self, point):
-        if point.exchange not in EXCHANGES:
-            return
-        points = self.plot.points
-        if not points or point.timestamp > points[-1].timestamp:
-            points.append(point)
-        else:
-            index = bisect_left(points, point.timestamp, key=lambda item: item.timestamp)
-            if index < len(points) and points[index].timestamp == point.timestamp:
-                points[index] = point
-            else:
-                points.insert(index, point)
-        self.advance_time()
-
     def advance_time(self):
         self.plot.now = int(time.time() * 1000)
-        expired = bisect_left(self.plot.points, self.plot.now - RETENTION_MS,
-                              key=lambda point: point.timestamp)
-        if expired:
-            del self.plot.points[:expired]
         expired_prices = bisect_left(self.plot.price_points, self.plot.now - RETENTION_MS,
                                      key=lambda point: point.timestamp)
         if expired_prices:
@@ -313,14 +307,7 @@ class FundingChart(QFrame):
     def refresh(self):
         self.plot.now = int(time.time() * 1000)
         self.plot.price_points = self.price_store.load(self.instrument, self.plot.now)
-        self.plot.points = [point for point in self.store.load(self.instrument, self.plot.now)
-                            if point.exchange in EXCHANGES]
         self.plot.update()
-
-    def update_status(self, exchange, status):
-        self.statuses[exchange] = status
-        self.status_label.setText('　'.join(self.statuses[name] for name in EXCHANGES))
-        self.status_label.setToolTip(self.status_label.text())
 
     def shutdown(self):
         self.refresh_timer.stop()

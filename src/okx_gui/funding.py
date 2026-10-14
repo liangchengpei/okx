@@ -205,26 +205,4 @@ class FundingWorker(QThread):
     async def _run(self):
         with self._lock:
             self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
-        store = FundingStore(self.database_path)
-        async def poll_funding():
-            async with httpx.AsyncClient(**funding_client_options()) as client:
-                while not self.isInterruptionRequested():
-                    cycle_started = asyncio.get_running_loop().time()
-                    async def update(exchange):
-                        now = int(time.time() * 1000)
-                        try:
-                            point = await fetch_current_funding(client, self.instrument)
-                            now = point.timestamp
-                            points = [point]
-                            await asyncio.to_thread(store.save, self.instrument, points, now)
-                            self.status.emit(exchange, f'{point.rate * 100:.6f}%' )
-                            self.sampled.emit(point)
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:
-                            self.status.emit(exchange, f'更新失败（保留缓存）· {funding_error_message(exc)}')
-                    await asyncio.gather(*(update(exchange) for exchange in EXCHANGES))
-                    elapsed = asyncio.get_running_loop().time() - cycle_started
-                    await asyncio.sleep(max(0, 1 - elapsed))
-
-        await asyncio.gather(poll_funding(), self.collect_prices())
+        await self.collect_prices()

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from okx_gui.funding import FundingPoint, FundingStore, RETENTION_MS, fetch_current_funding
+from okx_gui.funding import FundingPoint, FundingStore, PricePoint, PriceStore, RETENTION_MS, fetch_current_funding
 
 
 def test_seven_day_cache_precision_retention_dedup_and_contract_isolation(tmp_path):
@@ -64,24 +64,18 @@ def test_live_cache_does_not_read_old_settlement_table(tmp_path):
     assert FundingStore(path).load('BTC', 200) == []
 
 
-def test_chart_restores_only_okx_cache_and_keeps_curve_on_failure(qtbot):
-    from okx_gui.funding_chart import FundingChart, COLORS
+def test_price_chart_ignores_funding_history(qtbot):
+    from okx_gui.funding_chart import FundingChart
+    from PySide6.QtWidgets import QLabel
     now = int(time.time() * 1000)
-    points = [FundingPoint(exchange, now - 60000, Decimal(value)) for exchange,value in
-              [('okx','0.0001'),('binance','-0.0001'),('bybit','0.0002')]]
-    FundingStore().save('BTC-USDT-SWAP', points, now)
+    FundingStore().save('BTC-USDT-SWAP', [FundingPoint('okx', now, Decimal('0.001'))], now)
+    points = [PricePoint(now - 1000, Decimal('82000'))]
+    PriceStore().save('BTC-USDT-SWAP', points, now)
     chart = FundingChart('BTC-USDT-SWAP')
     qtbot.addWidget(chart)
-    chart.resize(640,280)
-    chart.show()
-    assert chart.plot.points == [points[0]]
-    chart.update_status('okx', '网络连接失败（保留缓存）')
-    assert chart.plot.points == [points[0]]
-    assert set(COLORS) == {'okx'}
-    from okx_gui.funding import EXCHANGES
-    assert EXCHANGES == ('okx',)
-    assert '币安' not in chart.status_label.text()
-    assert 'Bybit' not in chart.status_label.text()
+    assert chart.plot.price_points == points
+    assert all('费率' not in label.text() for label in chart.findChildren(QLabel))
+    assert set(chart.plot.y_scales) == {'price'}
     assert chart.plot.grab().width() > 0
     assert chart.shutdown()
 
@@ -109,17 +103,18 @@ def test_funding_proxy_is_optional_and_does_not_override_environment_defaults(mo
     assert funding_client_options()['proxy'] == 'http://127.0.0.1:7890'
 
 
-def test_chart_keeps_each_live_sample_without_time_buckets(qtbot):
+def test_chart_keeps_raw_samples_and_offers_price_aggregation(qtbot):
     from okx_gui.funding_chart import FundingChart
     from PySide6.QtWidgets import QComboBox
     now = int(time.time() * 1000)
-    points = [FundingPoint('okx', now - offset, Decimal(rate))
-              for offset, rate in [(45000, '0.0001'), (30000, '0.0002'), (15000, '-0.0001')]]
-    FundingStore().save('BTC-USDT-SWAP', points, now)
+    points = [PricePoint(now - offset, Decimal(rate))
+              for offset, rate in [(45000, '82000'), (30000, '82100'), (15000, '81900')]]
+    PriceStore().save('BTC-USDT-SWAP', points, now)
     chart = FundingChart('BTC-USDT-SWAP')
     qtbot.addWidget(chart)
-    assert chart.plot.points == points
-    assert not chart.findChildren(QComboBox)
+    assert chart.plot.price_points == points
+    assert chart.interval.count() == 2
+    assert [chart.interval.itemData(i) for i in range(2)] == [1, 15]
     assert chart.plot.span == 3600000
     assert chart.shutdown()
 
@@ -178,13 +173,13 @@ def test_live_updates_and_timer_do_not_reread_database(qtbot, monkeypatch):
     qtbot.addWidget(chart)
     def unexpected_read(*args):
         pytest.fail('Live refresh must not reread the entire database')
-    monkeypatch.setattr(chart.store, 'load', unexpected_read)
+    monkeypatch.setattr(chart.price_store, 'load', unexpected_read)
     now = int(time.time() * 1000)
-    point = FundingPoint('okx', now, Decimal('0.0001'))
-    chart.append_sample(point)
+    point = PricePoint(now, Decimal('82000'))
+    chart.append_price(point)
     chart.advance_time()
-    chart.append_sample(point)
-    assert chart.plot.points == [point]
+    chart.append_price(point)
+    assert chart.plot.price_points == [point]
     assert chart.shutdown()
 
 
@@ -193,7 +188,7 @@ def test_paint_computes_time_span_once(qtbot, monkeypatch):
     plot = FundingPlot()
     qtbot.addWidget(plot)
     plot.resize(600, 230)
-    plot.points = [FundingPoint('okx', plot.now - i * 1000, Decimal('0.0001'))
+    plot.price_points = [PricePoint(plot.now - i * 1000, Decimal('82000'))
                    for i in reversed(range(1000))]
     original = FundingPlot.span.fget
     accesses = []
@@ -254,7 +249,7 @@ def test_price_sampling_uses_quote_feed_and_skips_stale_quotes(tmp_path, monkeyp
         assert points[0].price == Decimal('82601.5')
 
 
-def test_dual_axis_price_series_survives_refresh_and_zoom(qtbot):
+def test_price_series_survives_refresh_and_zoom(qtbot):
     from okx_gui.funding import PricePoint, PriceStore
     from okx_gui.funding_chart import FundingChart
     now = int(time.time() * 1000)
@@ -273,7 +268,7 @@ def test_dual_axis_price_series_survives_refresh_and_zoom(qtbot):
     assert chart.shutdown()
 
 
-def test_ctrl_wheel_zooms_each_y_axis_independently(qtbot):
+def test_ctrl_wheel_zooms_price_from_either_side(qtbot):
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
@@ -291,24 +286,26 @@ def test_ctrl_wheel_zooms_each_y_axis_independently(qtbot):
         QApplication.sendEvent(plot, event)
         assert event.isAccepted()
     wheel(10, 120)
-    assert plot.y_scales == {'funding': 0.8, 'price': 1.0}
-    assert plot.scaled_y_range('funding', -1, 1) == (-0.8, 0.8)
+    assert plot.y_scales == {'price': 0.8}
+    assert plot.scaled_y_range('price', -1, 1) == (-0.8, 0.8)
     wheel(630, -120)
-    assert plot.y_scales == {'funding': 0.8, 'price': 1.25}
+    assert plot.y_scales == {'price': 1.0}
     assert plot.span == original_span
     chart.refresh()
-    assert plot.y_scales == {'funding': 0.8, 'price': 1.25}
+    assert plot.y_scales == {'price': 1.0}
     wheel(10, -120)
     wheel(630, 120)
-    assert plot.y_scales == {'funding': 1.0, 'price': 1.0}
+    assert plot.y_scales == {'price': 1.0}
     for _ in range(5):
         wheel(10, 2400)
+    assert plot.y_scales == {'price': 0.001}
+    for _ in range(5):
         wheel(630, -2400)
-    assert plot.y_scales == {'funding': 0.001, 'price': 1000.0}
+    assert plot.y_scales == {'price': 1000.0}
     assert chart.shutdown()
 
 
-def test_left_drag_pans_time_and_both_y_axes_and_double_click_restores(qtbot):
+def test_left_drag_pans_time_and_price_axis_and_double_click_restores(qtbot):
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
@@ -327,7 +324,7 @@ def test_left_drag_pans_time_and_both_y_axes_and_double_click_restores(qtbot):
     original_end = plot.end_time
     mouse(QEvent.MouseMove, (300, 110), Qt.NoButton, Qt.LeftButton)
     assert plot.end_time < original_end
-    assert plot.y_offsets['funding'] > 0 and plot.y_offsets['price'] > 0
+    assert plot.y_offsets['price'] > 0
     frozen_end = plot.end_time
     chart.advance_time()
     assert plot.end_time == frozen_end
@@ -339,7 +336,7 @@ def test_left_drag_pans_time_and_both_y_axes_and_double_click_restores(qtbot):
     mouse(QEvent.MouseButtonRelease, (200, 70), Qt.LeftButton, Qt.NoButton)
     mouse(QEvent.MouseButtonDblClick, start, Qt.LeftButton, Qt.LeftButton)
     assert plot.view_end is None
-    assert plot.y_offsets == {'funding': 0.0, 'price': 0.0}
+    assert plot.y_offsets == {'price': 0.0}
     assert chart.shutdown()
 
 
@@ -355,7 +352,6 @@ def test_left_drag_allows_future_space_and_refresh_preserves_view(qtbot):
     chart.plot.grab()
     plot = chart.plot
     original_now = plot.now
-    original_points = list(plot.points)
     original_prices = list(plot.price_points)
     origin = plot.plot_rect.center()
     target = origin - QPointF(plot.plot_rect.width() / 4, 0)
@@ -367,12 +363,82 @@ def test_left_drag_allows_future_space_and_refresh_preserves_view(qtbot):
     mouse(QEvent.MouseMove, target, Qt.NoButton, Qt.LeftButton)
     mouse(QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
     assert plot.end_time == pytest.approx(original_now + plot.span / 4)
-    assert plot.y_offsets == {'funding': 0.0, 'price': 0.0}
+    assert plot.y_offsets == {'price': 0.0}
     frozen = plot.end_time
     chart.advance_time()
     assert plot.end_time == frozen
-    assert plot.points == original_points and plot.price_points == original_prices
+    assert plot.price_points == original_prices
     assert plot.grab().width() > 0
     mouse(QEvent.MouseButtonDblClick, origin, Qt.LeftButton, Qt.LeftButton)
     assert plot.view_end is None and plot.end_time == plot.now
     assert chart.shutdown()
+
+
+def test_worker_no_longer_polls_funding(tmp_path, monkeypatch):
+    from okx_gui.funding import FundingWorker
+    worker = FundingWorker('BTC-USDT-SWAP', tmp_path / 'prices.sqlite3')
+    calls = []
+    async def prices():
+        calls.append('prices')
+    async def forbidden(*args):
+        pytest.fail('Price chart must not request funding rates')
+    monkeypatch.setattr(worker, 'collect_prices', prices)
+    monkeypatch.setattr('okx_gui.funding.fetch_current_funding', forbidden)
+    asyncio.run(worker._run())
+    assert calls == ['prices']
+
+
+@pytest.mark.parametrize('minutes', [1, 15])
+def test_price_candles_preserve_ohlc_gaps_and_precision(minutes):
+    from okx_gui.funding_chart import aggregate_prices, PriceCandle
+    period = minutes * 60000
+    points = [PricePoint(period * 100, Decimal('82000')),
+              PricePoint(period * 101 - 1, Decimal('82001.123456')),
+              PricePoint(period * 101, Decimal('81900')),
+              PricePoint(period * 103 + 5, Decimal('82100'))]
+    result = aggregate_prices(points, minutes)
+    assert result == [PriceCandle(period * 100, Decimal('82000'), Decimal('82001.123456'), Decimal('82000'), Decimal('82001.123456')),
+                      PriceCandle(period * 101, *[Decimal('81900')]*4),
+                      PriceCandle(period * 103, *[Decimal('82100')]*4)]
+    assert len(points) == 4
+
+
+def test_price_segments_use_green_up_red_down_gray_flat():
+    from okx_gui.funding_chart import price_color, UP_COLOR, DOWN_COLOR, PRICE_COLOR
+    assert price_color(Decimal('1'), Decimal('2')) == UP_COLOR == '#15966b'
+    assert price_color(Decimal('2'), Decimal('1')) == DOWN_COLOR == '#d94b55'
+    assert price_color(Decimal('1'), Decimal('1')) == PRICE_COLOR
+
+
+def test_switching_price_period_reaggregates_and_keeps_view(qtbot):
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    now = 1800000899000  # End of a 15-minute interval.
+    chart.plot.now = now
+    chart.plot.price_points = [PricePoint(now - i * 60000, Decimal(82000 + i)) for i in reversed(range(15))]
+    chart.plot.manual_span = 3600000
+    chart.plot.view_end = now + 60000
+    before = list(chart.plot.price_points)
+    assert len(chart.plot.visible_prices(now, chart.plot.span)) == 15
+    chart.interval.setCurrentIndex(1)
+    points = chart.plot.visible_prices(now, chart.plot.span)
+    assert len(points) == 1 and points[0].price == Decimal(82000)
+    assert chart.plot.view_end == now + 60000 and chart.plot.span == 3600000
+    assert chart.plot.price_points == before
+    chart.plot.price_points.append(PricePoint(now + 100, Decimal('82099.5')))
+    chart.plot.now = now + 100
+    assert chart.plot.visible_prices(now + 100, chart.plot.span)[-1].price == Decimal('82099.5')
+    chart.plot.grab()
+    assert chart.shutdown()
+
+
+def test_candle_wicks_include_intraperiod_extremes_and_current_close():
+    from okx_gui.funding_chart import aggregate_prices
+    points = [PricePoint(60000 + i * 1000, Decimal(value))
+              for i, value in enumerate(('100', '120', '80', '110'))]
+    candle = aggregate_prices(points, 1)[0]
+    assert (candle.open, candle.high, candle.low, candle.close) == (100, 120, 80, 110)
+    points.append(PricePoint(65000, Decimal('90')))
+    updated = aggregate_prices(points, 1)[0]
+    assert (updated.open, updated.high, updated.low, updated.close) == (100, 120, 80, 90)
