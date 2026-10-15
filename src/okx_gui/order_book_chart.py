@@ -81,7 +81,7 @@ class OrderBookPlot(QWidget):
             painter.setPen(QPen(QColor('#e9ebee'), 1))
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor('#7b818a'))
-            painter.drawText(QRectF(0, y - 9, 55, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:,.4g}')
+            painter.drawText(QRectF(0, y - 9, 55, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:,.6g}')
             x = rect.left() + i * rect.width() / 4
             decimals = max(0, -self.step.normalize().as_tuple().exponent)
             label = f'{left + i * span / 4:,.{decimals}f}'
