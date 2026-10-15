@@ -923,3 +923,15 @@ def test_existing_plan_orders_are_selectable_relay_parents(qtbot):
     assert combo.currentData() == parent
     assert '计划委托' in combo.currentText()
     window.close()
+
+
+def test_order_book_is_below_price_chart_and_stops_on_removal(qtbot):
+    window = make_window(qtbot)
+    row = window.rows['BTC-USDT-SWAP']
+    assert row.funding_area.y() < row.order_book_area.y() < row.low_input.y()
+    area = row.order_book_area
+    assert area.timer.isActive()
+    window.remove_contract(row.instrument)
+    assert row.instrument not in window.rows
+    assert not area.timer.isActive()
+    window.close()

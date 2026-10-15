@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from okx_gui.funding_chart import FundingChart
 from okx_gui.trade_volume_chart import TradeVolumeChart
+from okx_gui.order_book_chart import OrderBookChart
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
@@ -44,7 +45,7 @@ QPushButton#remove { background: transparent; color: #777; font-size: 20px; padd
 QLabel#muted { color: #7b818a; font-size: 12px; }
 QLabel#error { color: #c34747; font-size: 12px; }
 QFrame#row { border: 0; }
-QFrame#tradeVolumeChart, QFrame#fundingChart { border: 1px solid #858585; background: white; }
+QFrame#tradeVolumeChart, QFrame#fundingChart, QFrame#orderBookChart { border: 1px solid #858585; background: white; }
 QFrame#list { border: 1px solid #e0e1e3; border-radius: 10px; }
 QScrollArea { border: 0; background: transparent; }
 QSplitter#mainSplitter::handle:vertical { background: #e0e1e3; border: 0; }
@@ -127,6 +128,8 @@ class ContractRow(QFrame):
         layout.addWidget(self.chart_area, 1)
         self.funding_area = FundingChart(instrument)
         layout.addWidget(self.funding_area, 1)
+        self.order_book_area = OrderBookChart(instrument)
+        layout.addWidget(self.order_book_area, 1)
         voice = QVBoxLayout()
         voice.setContentsMargins(8, 0, 8, 8)
         settings = QHBoxLayout()
@@ -721,7 +724,7 @@ class MainWindow(QMainWindow):
         return True
 
     def remove_contract(self, inst):
-        if not self.rows[inst].chart_area.shutdown() or not self.rows[inst].funding_area.shutdown():
+        if not all(area.shutdown() for area in (self.rows[inst].chart_area, self.rows[inst].funding_area, self.rows[inst].order_book_area)):
             self.show_error("成交行情连接正在关闭，请稍后删除合约")
             return
         for side in ("low", "high"):
@@ -770,7 +773,9 @@ class MainWindow(QMainWindow):
         total = sum(self.main_splitter.sizes())
         bottom_minimum = max(self.trading_panel.minimumHeight(), self.trading_panel.minimumSizeHint().height())
         desired = max(self.monitor_panel.minimumHeight(), rows_height + overhead)
-        if self.rows:
+        if 0 < len(self.rows) <= 2:
+            desired = total - max(500, bottom_minimum)
+        elif self.rows:
             desired = max(desired, total - max(500, bottom_minimum))
         height = min(desired, max(self.monitor_panel.minimumHeight(), total - bottom_minimum))
         self.main_splitter.setSizes([height, total - height])
@@ -977,7 +982,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         for row in self.rows.values():
-            if not row.chart_area.shutdown() or not row.funding_area.shutdown():
+            if not all(area.shutdown() for area in (row.chart_area, row.funding_area, row.order_book_area)):
                 event.ignore()
                 return
         if self.orders_worker and self.orders_worker.isRunning():
