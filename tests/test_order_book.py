@@ -110,24 +110,82 @@ def test_chart_aggregation_pan_zoom_and_live_refresh(qtbot):
     assert chart.shutdown()
 
 
-def test_book_worker_subscribes_and_coalesces_latest_snapshot(monkeypatch):
+
+def full_payload(bids=None, asks=None, timestamp=1800000000000):
+    return {'code': '0', 'data': [{'ts': str(timestamp),
+        'bids': bids if bids is not None else [[str(10000-i), '1', '1'] for i in range(800)],
+        'asks': asks if asks is not None else [[str(10001+i), '2', '1'] for i in range(800)]}]}
+
+
+def test_full_snapshot_returns_800_levels_and_keeps_far_depth():
+    from okx_gui.order_book import parse_full_book
+    snapshot = parse_full_book(full_payload())
+    assert len(snapshot.bids) == len(snapshot.asks) == 800
+    assert snapshot.bids[-1][0] == 9201
+    assert snapshot.asks[-1][0] == 10800
+    assert sum(q for _, q in aggregate_depth(snapshot.bids, '50', 'buy')) == 800
+
+
+def test_short_full_snapshot_does_not_pad_or_keep_deleted_levels():
+    from okx_gui.order_book import parse_full_book
+    snapshot = parse_full_book(full_payload(bids=[['100', '3', '1']], asks=[]))
+    assert snapshot.bids == ((D(100), D(3)),) and snapshot.asks == ()
+
+
+@pytest.mark.parametrize('payload', [
+    {'code': '50011', 'msg': 'Rate limit reached'},
+    {'code': '0', 'data': []},
+    full_payload(bids=[['NaN', '1']]),
+    full_payload(asks=[['101', '-2']]),
+])
+def test_bad_full_snapshots_are_rejected(payload):
+    from okx_gui.order_book import parse_full_book
+    with pytest.raises(BookSyncError):
+        parse_full_book(payload)
+
+
+def test_book_worker_requests_800_and_replaces_each_snapshot(monkeypatch):
     from okx_gui import order_book as module
     worker = OrderBookWorker(INST)
-    sent, incoming = [], [message(), message('update', 11, 10, bids=[['100', '7']], asks=[])]
+    calls, snapshots, delays = [], [], []
+    responses = [full_payload(), full_payload(bids=[['100', '7']], asks=[], timestamp=1800000001000)]
     stopped = [False]
     monkeypatch.setattr(worker, 'isInterruptionRequested', lambda: stopped[0])
-    class Socket:
-        async def send(self, value): sent.append(json.loads(value))
-        async def recv(self):
-            value = incoming.pop(0)
-            if not incoming:
-                stopped[0] = True
-            return json.dumps(value)
-    class Connection:
-        async def __aenter__(self): return Socket()
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return responses.pop(0)
+    class Client:
+        async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
-    monkeypatch.setattr(module, 'connect', lambda *args, **kwargs: Connection())
+        async def get(self, url, params):
+            calls.append((url, params))
+            return Response()
+    async def wait(): pass
+    async def sleep(delay):
+        snapshots.append(worker.take_snapshot())
+        delays.append(delay)
+        stopped[0] = not responses
+    monkeypatch.setattr(module.httpx, 'AsyncClient', lambda **kwargs: Client())
+    monkeypatch.setattr(module.DEPTH_LIMITER, 'wait', wait)
+    monkeypatch.setattr(module.asyncio, 'sleep', sleep)
     asyncio.run(worker._run())
-    assert sent == [{'op': 'subscribe', 'args': [{'channel': 'books', 'instId': INST}]}]
-    assert worker.take_snapshot().bids[0] == (D(100), D(7))
+    assert calls == [(module.FULL_BOOK_URL, {'instId': INST, 'sz': '800'})] * 2
+    assert len(snapshots[0].bids) == 800
+    assert snapshots[1].bids == ((D(100), D(7)),) and snapshots[1].asks == ()
+    assert all(0 <= delay <= 1 for delay in delays)
     assert worker.take_snapshot() is None
+
+
+def test_full_snapshot_limiter_spaces_requests(monkeypatch):
+    from okx_gui import order_book as module
+    limiter = module.DepthRequestLimiter()
+    clock, times = [0.0], []
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    async def sleep(delay): clock[0] += delay
+    monkeypatch.setattr(module.asyncio, 'sleep', sleep)
+    async def run():
+        for _ in range(12):
+            await limiter.wait()
+            times.append(clock[0])
+    asyncio.run(run())
+    assert all(b-a >= 0.25 for a, b in zip(times, times[1:]))

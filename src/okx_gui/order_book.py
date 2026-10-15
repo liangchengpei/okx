@@ -1,15 +1,15 @@
-"""Public OKX books snapshots and sequenced incremental depth."""
+"""Public OKX full-depth snapshots and depth aggregation."""
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
-import json
 import threading
 import time
 
 from PySide6.QtCore import QThread, Signal
-from websockets import connect
+import httpx
 
-from okx_gui.market import PUBLIC_URL
+FULL_BOOK_URL = "https://www.okx.com/api/v5/market/books-full"
+DEPTH = 800
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,57 @@ def aggregate_depth(levels, step, side):
     return tuple(sorted(totals.items()))
 
 
+def parse_full_book(payload):
+    if not isinstance(payload, dict) or payload.get('code') != '0':
+        code = payload.get('code', '?') if isinstance(payload, dict) else '?'
+        message = payload.get('msg', '无效响应') if isinstance(payload, dict) else '无效响应'
+        raise BookSyncError(f'完整订单本失败（{code}）：{message}')
+    try:
+        rows = payload['data']
+        if not isinstance(rows, list) or len(rows) != 1:
+            raise ValueError('无效快照')
+        row = rows[0]
+        timestamp = int(row['ts'])
+        if timestamp <= 0:
+            raise ValueError('无效时间')
+        sides = []
+        for name in ('bids', 'asks'):
+            if not isinstance(row[name], list):
+                raise ValueError('无效档位')
+            levels = {}
+            for level in row[name]:
+                price, quantity = Decimal(level[0]), Decimal(level[1])
+                if not price.is_finite() or price <= 0 or not quantity.is_finite() or quantity < 0:
+                    raise ValueError('无效价格或数量')
+                if price in levels:
+                    raise ValueError('重复档位')
+                if quantity:
+                    levels[price] = quantity
+            sides.append(tuple(sorted(levels.items(), reverse=name == 'bids')[:DEPTH]))
+        return BookSnapshot(timestamp, *sides)
+    except (KeyError, TypeError, ValueError, InvalidOperation, IndexError) as exc:
+        raise BookSyncError(f'完整订单本数据不完整：{exc}') from exc
+
+
+class DepthRequestLimiter:
+    """Shared across worker threads; leave headroom below the IP quota."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_request = float('-inf')
+
+    async def wait(self):
+        while True:
+            with self.lock:
+                delay = self.last_request + 0.25 - time.monotonic()
+                if delay <= 0:
+                    self.last_request = time.monotonic()
+                    return
+            await asyncio.sleep(delay)
+
+
+DEPTH_LIMITER = DepthRequestLimiter()
+
+
 class OrderBookWorker(QThread):
     status = Signal(str)
 
@@ -121,46 +172,28 @@ class OrderBookWorker(QThread):
     async def _run(self):
         with self._lock:
             self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
-        while not self.isInterruptionRequested():
-            book = OrderBook()
-            try:
-                self.status.emit('OKX：连接中')
-                async with connect(PUBLIC_URL, open_timeout=10, close_timeout=1, ping_interval=None) as socket:
-                    await socket.send(json.dumps({'op': 'subscribe', 'args': [
-                        {'channel': 'books', 'instId': self.instrument}]}))
-                    last_message = time.monotonic()
-                    snapshot_deadline = last_message + 10
-                    ping_sent = False
-                    while not self.isInterruptionRequested():
-                        now = time.monotonic()
-                        if book.sequence is None and now > snapshot_deadline:
-                            raise TimeoutError('等待订单本快照超时')
-                        if now - last_message > 30:
-                            raise TimeoutError('订单本心跳超时')
-                        if now - last_message > 20 and not ping_sent:
-                            await socket.send('ping')
-                            ping_sent = True
-                        try:
-                            message = await asyncio.wait_for(socket.recv(), 0.5)
-                        except asyncio.TimeoutError:
-                            continue
-                        last_message = time.monotonic()
-                        ping_sent = False
-                        if message == 'pong':
-                            continue
-                        payload = json.loads(message)
-                        if isinstance(payload, dict) and payload.get('event') == 'error':
-                            self.status.emit('OKX：订阅失败 · ' + str(payload.get('msg', '未知错误'))[:100])
-                            return
-                        first = book.sequence is None
-                        snapshot = book.apply(payload, self.instrument)
-                        if snapshot is not None:
-                            with self._lock:
-                                self._snapshot = snapshot  # Coalesce; never flood the GUI event queue.
-                            if first:
-                                self.status.emit('OKX：实时订单本 · 每侧最多400档')
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.status.emit(f'OKX：重连中（旧数据暂停更新）· {str(exc)[:80]}')
-                await asyncio.sleep(3)
+        self.status.emit('OKX：读取800档完整订单本')
+        last_timestamp = 0
+        async with httpx.AsyncClient(timeout=8) as client:
+            while not self.isInterruptionRequested():
+                started = time.monotonic()
+                delay = 1
+                try:
+                    await DEPTH_LIMITER.wait()
+                    if self.isInterruptionRequested():
+                        break
+                    response = await client.get(FULL_BOOK_URL, params={'instId': self.instrument, 'sz': str(DEPTH)})
+                    response.raise_for_status()
+                    snapshot = parse_full_book(response.json())
+                    if snapshot.timestamp < last_timestamp:
+                        raise BookSyncError('收到过期快照，保留较新订单本')
+                    last_timestamp = snapshot.timestamp
+                    with self._lock:
+                        self._snapshot = snapshot
+                    self.status.emit(f'OKX：完整快照 · 买盘{len(snapshot.bids)}档 / 卖盘{len(snapshot.asks)}档 · 每秒刷新')
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.status.emit(f'OKX：更新失败（保留旧数据）· {str(exc)[:100]}')
+                    delay = 3
+                await asyncio.sleep(max(0, delay - (time.monotonic() - started)))

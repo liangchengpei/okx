@@ -2,7 +2,6 @@
 from decimal import Decimal
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import math
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -82,7 +81,7 @@ class OrderBookPlot(QWidget):
             painter.setPen(QColor('#7b818a'))
             painter.drawText(QRectF(0, y - 9, 55, 18), Qt.AlignRight | Qt.AlignVCenter, f'{value:,.4g}')
             x = rect.left() + i * rect.width() / 4
-            decimals = max(1, -math.floor(math.log10(span / 4)))
+            decimals = max(0, -self.step.normalize().as_tuple().exponent)
             label = f'{left + i * span / 4:,.{decimals}f}'
             painter.drawText(QRectF(max(0, min(x - 45, self.width() - 90)), rect.bottom() + 5, 90, 18), Qt.AlignCenter, label)
         painter.drawText(QRectF(rect.left(), rect.bottom() + 24, rect.width(), 16), Qt.AlignRight, '价格')
