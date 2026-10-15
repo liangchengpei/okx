@@ -213,7 +213,7 @@ class MainWindow(QMainWindow):
         self.speech = speech_factory(self)
         self.speech.error.connect(self.speech_failed)
         self.setWindowTitle("OKX 合约监控")
-        self.resize(1380, 1600)
+        self.resize(1380, 1800)
         self.setMinimumSize(1270, 650)
         self.setStyleSheet(STYLE)
         root = QWidget()
