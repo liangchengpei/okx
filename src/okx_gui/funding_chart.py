@@ -8,11 +8,13 @@ import math
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from okx_gui.account_ratio import RatioStore, RatioWorker
 from okx_gui.funding import RETENTION_MS, FundingWorker, PriceStore, PricePoint
 
+RATIO_COLOR = '#2679d8'
 PRICE_COLOR = '#7b818a'
 UP_COLOR = '#15966b'
 DOWN_COLOR = '#d94b55'
@@ -94,14 +96,15 @@ class FundingPlot(QWidget):
     def __init__(self):
         super().__init__()
         self.price_points = []
+        self.ratio_points = []
         self.minutes = 1
         self.live_price = None
         self.now = int(time.time() * 1000)
         self.plot_rect = QRectF()
         self.manual_span = None
-        self.y_scales = {'price': 1.0}
-        self.y_offsets = {'price': 0.0}
-        self.y_ranges = {'price': (0, 1)}
+        self.y_scales = {'price': 1.0, 'ratio': 1.0}
+        self.y_offsets = {'price': 0.0, 'ratio': 0.0}
+        self.y_ranges = {'price': (0, 1), 'ratio': (0, 1)}
         self.view_end = None
         self.resume_follow_at = None
         self._drag = None
@@ -147,7 +150,7 @@ class FundingPlot(QWidget):
         if event.button() == Qt.LeftButton:
             self.view_end = None
             self.resume_follow_at = None
-            self.y_offsets = {'price': 0.0}
+            self.y_offsets = {'price': 0.0, 'ratio': 0.0}
             self.update()
             event.accept()
         else:
@@ -169,7 +172,7 @@ class FundingPlot(QWidget):
         # Keep the latest time at the right edge, as new samples arrive.
         steps = max(-20, min(20, delta / 120))
         if event.modifiers() & Qt.ControlModifier:
-            axis = 'price'
+            axis = 'ratio' if event.position().x() < self.plot_rect.center().x() else 'price'
             self.y_scales[axis] = max(0.001, min(1000.0, self.y_scales[axis] * 0.8 ** steps))
         else:
             self.manual_span = max(60000, min(RETENTION_MS, int(self.span * 0.8 ** steps)))
@@ -198,7 +201,7 @@ class FundingPlot(QWidget):
         painter.setFont(font)
         latest = self.latest_price
         badge_width = max(88, painter.fontMetrics().horizontalAdvance(format_price(latest)) + 22) if latest is not None else 88
-        rect = QRectF(28, 24, max(1, self.width() - 36 - badge_width), max(1, self.height() - 66))
+        rect = QRectF(70, 24, max(1, self.width() - 78 - badge_width), max(1, self.height() - 66))
         self.plot_rect = rect
         span = self.span
         end_time = self.end_time
@@ -209,12 +212,25 @@ class FundingPlot(QWidget):
         price_padding = max((price_high - price_low) * 0.12, abs(price_high) * 0.0001, 0.000001)
         price_low, price_high = price_low - price_padding, price_high + price_padding
         price_low, price_high = self.scaled_y_range('price', price_low, price_high)
-        self.y_ranges = {'price': (price_low, price_high)}
+        ratio_start = max(0, bisect_left(self.ratio_points, end_time - span, key=lambda p: p.timestamp) - 1)
+        ratio_end = bisect_left(self.ratio_points, min(end_time, self.now) + 1, key=lambda p: p.timestamp)
+        ratios = self.ratio_points[ratio_start:ratio_end]
+        values = [float(p.ratio) for p in ratios]
+        ratio_low, ratio_high = (min(values), max(values)) if values else (0, 1)
+        padding = max((ratio_high - ratio_low) * 0.12, abs(ratio_high) * 0.01, 0.01)
+        ratio_low, ratio_high = self.scaled_y_range('ratio', ratio_low - padding, ratio_high + padding)
+        self.y_ranges = {'price': (price_low, price_high), 'ratio': (ratio_low, ratio_high)}
+        painter.setPen(QColor(RATIO_COLOR))
+        painter.drawText(QRectF(0, 0, 68, 20), Qt.AlignCenter, '多 / 空')
         for i in range(5):
             y = rect.bottom() - i * rect.height() / 4
             painter.setPen(QPen(QColor('#e9ebee'), 1))
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor('#7b818a'))
+            painter.setPen(QColor(RATIO_COLOR))
+            ratio_value = ratio_low + i * (ratio_high - ratio_low) / 4
+            painter.drawText(QRectF(0, y - 9, 62, 18), Qt.AlignRight | Qt.AlignVCenter,
+                             f'{ratio_value:.3f}' if ratios else '--')
             painter.setPen(QColor(PRICE_COLOR))
             price_value = price_low + i * (price_high - price_low) / 4
             label = axis_price_label(price_value, (price_high - price_low) / 4) if prices else '--'
@@ -246,6 +262,16 @@ class FundingPlot(QWidget):
                 painter.drawLine(QPointF(x - bar_width / 2, top), QPointF(x + bar_width / 2, top))
             else:
                 painter.fillRect(QRectF(x - bar_width / 2, top, bar_width, height), color)
+        ratio_path = QPainterPath()
+        for i, point in enumerate(ratios):
+            x = rect.left() + (point.timestamp - end_time + span) / span * rect.width()
+            y = rect.bottom() - (float(point.ratio) - ratio_low) / (ratio_high - ratio_low) * rect.height()
+            if i and point.timestamp - ratios[i - 1].timestamp <= 300000:
+                ratio_path.lineTo(QPointF(x, y))
+            else:
+                ratio_path.moveTo(QPointF(x, y))
+        painter.setPen(QPen(QColor(RATIO_COLOR), 1.6))
+        painter.drawPath(ratio_path)
         painter.restore()
         extremes = visible_extremes(prices, end_time - span, end_time)
         if extremes:
@@ -285,7 +311,7 @@ class FundingPlot(QWidget):
             painter.drawRoundedRect(badge, 3, 3)
             prefix = '' if in_range else ('↑ ' if y < rect.top() else '↓ ')
             painter.drawText(badge, Qt.AlignCenter, prefix + format_price(latest))
-        if not self.price_points:
+        if not self.price_points and not self.ratio_points:
             painter.setPen(QColor('#7b818a'))
             painter.drawText(rect, Qt.AlignCenter, '等待实时价格，采集后逐步形成K线')
 
@@ -295,13 +321,13 @@ class FundingPlot(QWidget):
             delta = event.position() - origin
             self.view_end = max(self.now - RETENTION_MS + self.span,
                                 end_time - delta.x() / self.plot_rect.width() * self.span)
-            for axis in ('price',):
+            for axis in ('price', 'ratio'):
                 low, high = ranges[axis]
                 self.y_offsets[axis] = offsets[axis] + delta.y() / self.plot_rect.height() * (high - low)
             self.update()
             event.accept()
             return
-        if self.plot_rect.contains(event.position()) and self.price_points:
+        if self.plot_rect.contains(event.position()) and (self.price_points or self.ratio_points):
             timestamp = self.end_time - self.span + (event.position().x() - self.plot_rect.left()) / self.plot_rect.width() * self.span
             if timestamp > self.now:
                 self.setToolTip('')
@@ -317,6 +343,14 @@ class FundingPlot(QWidget):
                                 + ('\n当前区间尚未结束' if bucket_start + self.minutes * 60000 > self.now else ''))
             else:
                 self.setToolTip('')
+            if self.ratio_points:
+                index = bisect_left(self.ratio_points, timestamp, key=lambda p: p.timestamp)
+                nearby = self.ratio_points[max(0, index - 1):index + 1]
+                point = min(nearby, key=lambda p: abs(p.timestamp - timestamp), default=None)
+                if point is not None and abs(point.timestamp - timestamp) <= 300000:
+                    date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
+                    text = f'多头账户 / 空头账户：{point.ratio} · {date}'
+                    self.setToolTip((self.toolTip() + '\n' if self.toolTip() else '') + text)
 
         else:
             self.setToolTip('')
@@ -331,16 +365,17 @@ class FundingChart(QFrame):
         self.setMinimumHeight(250)
         self.setAccessibleName(f'{instrument} 实时价格K线')
         self.price_store = PriceStore()
+        self.ratio_store = RatioStore()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 4)
         layout.setSpacing(4)
         heading = QHBoxLayout()
         title = QLabel('OKX 价格K线')
         title.setObjectName('muted')
-        title.setToolTip('每秒采样实时价格，按1或15分钟聚合开、高、低、收；实体为开盘到收盘，上下影线为最高和最低价。收盘高于开盘为绿色，低于为红色，持平灰色。基于本地每秒采样，不是交易所完整成交K线；当前区间持续更新。保留最近7天。滚轮缩放时间轴，Ctrl+滚轮缩放价格纵轴。按住左键平移，可拖至未来空白时间；双击恢复最新时间和纵轴位置。')
+        title.setToolTip('每秒采样实时价格，按1或15分钟聚合开、高、低、收；实体为开盘到收盘，上下影线为最高和最低价。收盘高于开盘为绿色，低于为红色，持平灰色。基于本地每秒采样，不是交易所完整成交K线；当前区间持续更新。保留最近7天。滚轮缩放时间轴，Ctrl+滚轮在左半侧缩放多空账户比、右半侧缩放价格。按住左键平移，可拖至未来空白时间；双击恢复最新时间和纵轴位置。')
         heading.addWidget(title)
         heading.addStretch()
-        for text, color in (('━ 上涨', UP_COLOR), ('━ 下跌', DOWN_COLOR)):
+        for text, color in (('━ 上涨', UP_COLOR), ('━ 下跌', DOWN_COLOR), ('━ 多/空（左轴）', RATIO_COLOR)):
             legend = QLabel(text)
             legend.setStyleSheet(f'color: {color}; font-size: 12px;')
             heading.addWidget(legend)
@@ -350,6 +385,12 @@ class FundingChart(QFrame):
             self.interval.addItem(f'{minutes} 分钟', minutes)
         heading.addWidget(self.interval)
         layout.addLayout(heading)
+        self.ratio_status = QLabel('多空账户比：等待数据（5分钟更新）')
+        self.ratio_status.setObjectName('muted')
+        self.ratio_status.setTextFormat(Qt.PlainText)
+        self.ratio_status.setFixedHeight(self.ratio_status.fontMetrics().lineSpacing() + 4)
+        self.ratio_status.setToolTip('多头账户数量 ÷ 空头账户数量；大于1表示多头账户更多。不是账户总数或资金费率。')
+        layout.addWidget(self.ratio_status)
         self.plot = FundingPlot()
         self.interval.currentIndexChanged.connect(self.change_interval)
         layout.addWidget(self.plot, 1)
@@ -357,10 +398,31 @@ class FundingChart(QFrame):
         self.worker = FundingWorker(instrument, self.price_store.path, self)
         self.worker.price_sampled.connect(self.append_price)
         self.worker.start()
+        self.ratio_worker = RatioWorker(instrument, self.ratio_store.path, self)
+        self.ratio_worker.sampled.connect(self.append_ratios)
+        self.ratio_worker.status.connect(self.update_ratio_status)
+        self.ratio_worker.start()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(1000)
         self.refresh_timer.timeout.connect(self.advance_time)
         self.refresh_timer.start()
+
+    def append_ratios(self, points):
+        merged = {p.timestamp: p for p in self.plot.ratio_points}
+        merged.update({p.timestamp: p for p in points})
+        self.plot.ratio_points = sorted(merged.values(), key=lambda p: p.timestamp)
+        self.advance_time()
+        self.update_ratio_status('')
+
+    def update_ratio_status(self, error):
+        if error:
+            self.ratio_status.setText(error)
+        elif self.plot.ratio_points:
+            point = self.plot.ratio_points[-1]
+            timestamp = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
+            self.ratio_status.setText(f'多 / 空：{point.ratio} · {timestamp} · 5分钟更新')
+        else:
+            self.ratio_status.setText('多空账户比：暂无数据（5分钟更新）')
 
     def set_price(self, value):
         self.worker.set_price(value)
@@ -389,6 +451,9 @@ class FundingChart(QFrame):
     def advance_time(self):
         self.plot.now = int(time.time() * 1000)
         self.plot.resume_follow_if_ready()
+        expired = bisect_left(self.plot.ratio_points, self.plot.now - RETENTION_MS, key=lambda p: p.timestamp)
+        if expired:
+            del self.plot.ratio_points[:expired]
         expired_prices = bisect_left(self.plot.price_points, self.plot.now - RETENTION_MS,
                                      key=lambda point: point.timestamp)
         if expired_prices:
@@ -398,12 +463,17 @@ class FundingChart(QFrame):
     def refresh(self):
         self.plot.now = int(time.time() * 1000)
         self.plot.price_points = self.price_store.load(self.instrument, self.plot.now)
+        self.plot.ratio_points = self.ratio_store.load(self.instrument, self.plot.now)
+        self.update_ratio_status('')
         self.plot.update()
 
     def shutdown(self):
         self.refresh_timer.stop()
         self.worker.stop()
-        return self.worker.wait(7000)
+        self.ratio_worker.stop()
+        price_stopped = self.worker.wait(7000)
+        ratio_stopped = self.ratio_worker.wait(7000)
+        return price_stopped and ratio_stopped
 
     def closeEvent(self, event):
         if self.shutdown():

@@ -75,7 +75,7 @@ def test_price_chart_ignores_funding_history(qtbot):
     qtbot.addWidget(chart)
     assert chart.plot.price_points == points
     assert all('费率' not in label.text() for label in chart.findChildren(QLabel))
-    assert set(chart.plot.y_scales) == {'price'}
+    assert set(chart.plot.y_scales) == {'price', 'ratio'}
     assert chart.plot.grab().width() > 0
     assert chart.shutdown()
 
@@ -268,7 +268,7 @@ def test_price_series_survives_refresh_and_zoom(qtbot):
     assert chart.shutdown()
 
 
-def test_ctrl_wheel_zooms_price_from_either_side(qtbot):
+def test_ctrl_wheel_zooms_price_on_right_side(qtbot):
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
@@ -285,23 +285,23 @@ def test_ctrl_wheel_zooms_price_from_either_side(qtbot):
                             Qt.NoScrollPhase, False)
         QApplication.sendEvent(plot, event)
         assert event.isAccepted()
-    wheel(10, 120)
-    assert plot.y_scales == {'price': 0.8}
+    wheel(630, 120)
+    assert plot.y_scales == {'price': 0.8, 'ratio': 1.0}
     assert plot.scaled_y_range('price', -1, 1) == (-0.8, 0.8)
     wheel(630, -120)
-    assert plot.y_scales == {'price': 1.0}
+    assert plot.y_scales == {'price': 1.0, 'ratio': 1.0}
     assert plot.span == original_span
     chart.refresh()
-    assert plot.y_scales == {'price': 1.0}
-    wheel(10, -120)
+    assert plot.y_scales == {'price': 1.0, 'ratio': 1.0}
+    wheel(630, -120)
     wheel(630, 120)
-    assert plot.y_scales == {'price': 1.0}
+    assert plot.y_scales == {'price': 1.0, 'ratio': 1.0}
     for _ in range(5):
-        wheel(10, 2400)
-    assert plot.y_scales == {'price': 0.001}
+        wheel(630, 2400)
+    assert plot.y_scales == {'price': 0.001, 'ratio': 1.0}
     for _ in range(5):
         wheel(630, -2400)
-    assert plot.y_scales == {'price': 1000.0}
+    assert plot.y_scales == {'price': 1000.0, 'ratio': 1.0}
     assert chart.shutdown()
 
 
@@ -336,7 +336,7 @@ def test_left_drag_pans_time_and_price_axis_and_double_click_restores(qtbot):
     mouse(QEvent.MouseButtonRelease, (200, 70), Qt.LeftButton, Qt.NoButton)
     mouse(QEvent.MouseButtonDblClick, start, Qt.LeftButton, Qt.LeftButton)
     assert plot.view_end is None
-    assert plot.y_offsets == {'price': 0.0}
+    assert plot.y_offsets == {'price': 0.0, 'ratio': 0.0}
     assert chart.shutdown()
 
 
@@ -363,7 +363,7 @@ def test_left_drag_allows_future_space_and_refresh_preserves_view(qtbot):
     mouse(QEvent.MouseMove, target, Qt.NoButton, Qt.LeftButton)
     mouse(QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
     assert plot.end_time == pytest.approx(original_now + plot.span / 4)
-    assert plot.y_offsets == {'price': 0.0}
+    assert plot.y_offsets == {'price': 0.0, 'ratio': 0.0}
     frozen = plot.end_time
     chart.advance_time()
     assert plot.end_time == frozen
