@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 import httpx
 
 FULL_BOOK_URL = "https://www.okx.com/api/v5/market/books-full"
+INSTRUMENTS_URL = "https://www.okx.com/api/v5/public/instruments"
 DEPTH = 800
 
 
@@ -17,6 +18,7 @@ class BookSnapshot:
     timestamp: int
     bids: tuple
     asks: tuple
+    unit: str = "张"
 
 
 class BookSyncError(ValueError):
@@ -117,6 +119,28 @@ def parse_full_book(payload):
         raise BookSyncError(f'完整订单本数据不完整：{exc}') from exc
 
 
+def contract_coin_factor(payload, instrument):
+    try:
+        if payload.get('code') != '0':
+            raise ValueError(payload.get('msg', '读取合约信息失败'))
+        rule = next(row for row in payload['data'] if row.get('instId') == instrument)
+        base = instrument.split('-')[0]
+        if rule.get('ctType') != 'linear' or rule.get('ctValCcy') != base:
+            raise ValueError('该合约面值币种不支持直接换算，不能显示为币数')
+        value, multiplier = Decimal(rule['ctVal']), Decimal(rule.get('ctMult') or '1')
+        if not value.is_finite() or value <= 0 or not multiplier.is_finite() or multiplier <= 0:
+            raise ValueError('合约面值或乘数无效')
+        return value * multiplier, base
+    except (KeyError, TypeError, ValueError, InvalidOperation, StopIteration, AttributeError) as exc:
+        raise BookSyncError(f'币数换算失败：{exc}') from exc
+
+
+def coin_snapshot(snapshot, factor, unit):
+    return BookSnapshot(snapshot.timestamp,
+                        tuple((price, size * factor) for price, size in snapshot.bids),
+                        tuple((price, size * factor) for price, size in snapshot.asks), unit)
+
+
 class DepthRequestLimiter:
     """Shared across worker threads; leave headroom below the IP quota."""
     def __init__(self):
@@ -174,17 +198,24 @@ class OrderBookWorker(QThread):
             self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
         self.status.emit('OKX：读取800档完整订单本')
         last_timestamp = 0
+        conversion = None
+        rules_loaded = 0
         async with httpx.AsyncClient(timeout=8) as client:
             while not self.isInterruptionRequested():
                 started = time.monotonic()
                 delay = 1
                 try:
+                    if conversion is None or time.monotonic() - rules_loaded >= 3600:
+                        rules = await client.get(INSTRUMENTS_URL, params={'instType': 'SWAP', 'instId': self.instrument})
+                        rules.raise_for_status()
+                        conversion = contract_coin_factor(rules.json(), self.instrument)
+                        rules_loaded = time.monotonic()
                     await DEPTH_LIMITER.wait()
                     if self.isInterruptionRequested():
                         break
                     response = await client.get(FULL_BOOK_URL, params={'instId': self.instrument, 'sz': str(DEPTH)})
                     response.raise_for_status()
-                    snapshot = parse_full_book(response.json())
+                    snapshot = coin_snapshot(parse_full_book(response.json()), *conversion)
                     if snapshot.timestamp < last_timestamp:
                         raise BookSyncError('收到过期快照，保留较新订单本')
                     last_timestamp = snapshot.timestamp

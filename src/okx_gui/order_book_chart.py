@@ -23,6 +23,7 @@ class OrderBookPlot(QWidget):
         super().__init__()
         self.step = Decimal('0.1')
         self.snapshot = None
+        self.unit = "币"
         self.bids, self.asks = (), ()
         self.manual_center = self.manual_span = None
         self.y_scale = 1.0
@@ -35,6 +36,7 @@ class OrderBookPlot(QWidget):
 
     def set_snapshot(self, snapshot):
         self.snapshot = snapshot
+        self.unit = snapshot.unit
         self.reaggregate()
 
     def reaggregate(self):
@@ -72,7 +74,7 @@ class OrderBookPlot(QWidget):
         zero = rect.center().y() + self.pan_y
         half = rect.height() / 2
         painter.setPen(QColor('#7b818a'))
-        painter.drawText(QRectF(4, 0, 200, 20), Qt.AlignLeft, '挂单量（张）')
+        painter.drawText(QRectF(4, 0, 200, 20), Qt.AlignLeft, f'挂单量（{self.unit}）')
         for i in range(5):
             y = rect.top() + i * rect.height() / 4
             value = (zero - y) / half * peak
@@ -149,7 +151,7 @@ class OrderBookPlot(QWidget):
             nearest = min(candidates, key=lambda item: abs(float(item[0]) - price), default=None)
             if nearest and abs(float(nearest[0]) - price) <= max(float(self.step) / 2, span * 5 / self.plot_rect.width()):
                 p, q, side = nearest
-                self.setToolTip(f'{side} · 聚合价 {number(p)}\n挂单量：{number(q)} 张')
+                self.setToolTip(f'{side} · 聚合价 {number(p)}\n挂单量：{number(q)} {self.unit}')
             else:
                 self.setToolTip('')
         else:
@@ -207,6 +209,7 @@ class OrderBookChart(QFrame):
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 2 + 4)
         layout.addWidget(self.status)
         self.plot = OrderBookPlot()
+        self.plot.unit = instrument.split("-")[0]
         self.plot.setToolTip('左键拖动，滚轮缩放价格轴，Ctrl+滚轮缩放挂单量轴；双击恢复自动视图')
         layout.addWidget(self.plot, 1)
         self.aggregation.currentIndexChanged.connect(self.change_aggregation)

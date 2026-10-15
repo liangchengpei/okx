@@ -152,14 +152,18 @@ def test_book_worker_requests_800_and_replaces_each_snapshot(monkeypatch):
     stopped = [False]
     monkeypatch.setattr(worker, 'isInterruptionRequested', lambda: stopped[0])
     class Response:
+        def __init__(self, rules=False): self.rules = rules
         def raise_for_status(self): pass
-        def json(self): return responses.pop(0)
+        def json(self):
+            if self.rules:
+                return {'code': '0', 'data': [{'instId': INST, 'ctType': 'linear', 'ctValCcy': 'BTC', 'ctVal': '0.01', 'ctMult': '1'}]}
+            return responses.pop(0)
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def get(self, url, params):
             calls.append((url, params))
-            return Response()
+            return Response(url == module.INSTRUMENTS_URL)
     async def wait(): pass
     async def sleep(delay):
         snapshots.append(worker.take_snapshot())
@@ -169,9 +173,10 @@ def test_book_worker_requests_800_and_replaces_each_snapshot(monkeypatch):
     monkeypatch.setattr(module.DEPTH_LIMITER, 'wait', wait)
     monkeypatch.setattr(module.asyncio, 'sleep', sleep)
     asyncio.run(worker._run())
-    assert calls == [(module.FULL_BOOK_URL, {'instId': INST, 'sz': '800'})] * 2
+    assert calls == [(module.INSTRUMENTS_URL, {'instType': 'SWAP', 'instId': INST})] + [(module.FULL_BOOK_URL, {'instId': INST, 'sz': '800'})] * 2
     assert len(snapshots[0].bids) == 800
-    assert snapshots[1].bids == ((D(100), D(7)),) and snapshots[1].asks == ()
+    assert snapshots[0].unit == "BTC"
+    assert snapshots[1].bids == ((D(100), D('0.07')),) and snapshots[1].asks == ()
     assert all(0 <= delay <= 1 for delay in delays)
     assert worker.take_snapshot() is None
 
@@ -189,3 +194,23 @@ def test_full_snapshot_limiter_spaces_requests(monkeypatch):
             times.append(clock[0])
     asyncio.run(run())
     assert all(b-a >= 0.25 for a, b in zip(times, times[1:]))
+
+
+@pytest.mark.parametrize('face,multiplier,expected', [('0.01', '1', '0.02'), ('0.1', '10', '2')])
+def test_coin_depth_uses_live_face_value_and_multiplier(face, multiplier, expected):
+    from okx_gui.order_book import contract_coin_factor, coin_snapshot
+    rule = {'instId': INST, 'ctType': 'linear', 'ctValCcy': 'BTC', 'ctVal': face, 'ctMult': multiplier}
+    factor, unit = contract_coin_factor({'code': '0', 'data': [rule]}, INST)
+    raw = BookSnapshot(1000, ((D(100), D(2)),), ((D(101), D(3)),))
+    converted = coin_snapshot(raw, factor, unit)
+    assert converted.bids[0][1] == D(expected)
+    assert converted.asks[0][1] == D(expected) * D('1.5')
+    assert raw.unit == '张' and converted.unit == 'BTC'
+
+
+@pytest.mark.parametrize('changes', [{'ctVal': '0'}, {'ctVal': 'NaN'}, {'ctValCcy': 'USD'}, {'instId': 'OTHER'}])
+def test_bad_contract_metadata_cannot_be_labeled_as_coins(changes):
+    from okx_gui.order_book import contract_coin_factor
+    rule = {'instId': INST, 'ctType': 'linear', 'ctValCcy': 'BTC', 'ctVal': '0.01', 'ctMult': '1', **changes}
+    with pytest.raises(BookSyncError):
+        contract_coin_factor({'code': '0', 'data': [rule]}, INST)
