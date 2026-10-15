@@ -504,3 +504,54 @@ def test_default_price_view_is_last_hour_even_with_seven_days_of_cache(qtbot):
     chart.refresh()
     assert chart.plot.span == 7200000
     assert chart.shutdown()
+
+
+def test_future_pan_resumes_follow_when_new_prices_reach_right_edge(qtbot, monkeypatch):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    from okx_gui.funding_chart import FundingChart
+    chart = FundingChart('BTC-USDT-SWAP')
+    qtbot.addWidget(chart)
+    chart.resize(800, 330)
+    chart.show()
+    plot = chart.plot
+    plot.grab()
+    origin = plot.plot_rect.center()
+    target = origin - QPointF(plot.plot_rect.width() / 4, 0)
+    def mouse(kind, position, button, buttons):
+        QApplication.sendEvent(plot, QMouseEvent(kind, position, position, button, buttons, Qt.NoModifier))
+    mouse(QEvent.MouseButtonPress, origin, Qt.LeftButton, Qt.LeftButton)
+    mouse(QEvent.MouseMove, target, Qt.NoButton, Qt.LeftButton)
+    mouse(QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
+    edge = plot.view_end
+    assert edge > plot.now and plot.resume_follow_at == edge
+    span = plot.span
+    offsets = dict(plot.y_offsets)
+    monkeypatch.setattr('okx_gui.funding_chart.time.time', lambda: (edge + 1000) / 1000)
+    chart.append_price(PricePoint(int(edge - 1), Decimal('82000')))
+    assert plot.view_end == edge  # Wall clock alone must not consume empty space.
+    chart.append_price(PricePoint(int(edge + 1), Decimal('82001')))
+    assert plot.view_end is None and plot.resume_follow_at is None
+    assert plot.end_time == plot.now and plot.span == span and plot.y_offsets == offsets
+    monkeypatch.setattr('okx_gui.funding_chart.time.time', lambda: (edge + 2000) / 1000)
+    chart.advance_time()
+    assert plot.end_time == int(edge + 2000)
+    assert chart.shutdown()
+
+
+def test_auto_follow_does_not_interrupt_drag_or_history_view(qtbot):
+    from okx_gui.funding_chart import FundingPlot
+    plot = FundingPlot()
+    qtbot.addWidget(plot)
+    plot.view_end = plot.now - 60000
+    plot.price_points = [PricePoint(plot.now, Decimal('82000'))]
+    plot.resume_follow_if_ready()
+    assert plot.view_end == plot.now - 60000
+    plot.resume_follow_at = plot.now
+    plot._drag = object()
+    plot.resume_follow_if_ready()
+    assert plot.view_end is not None
+    plot._drag = None
+    plot.resume_follow_if_ready()
+    assert plot.view_end is None

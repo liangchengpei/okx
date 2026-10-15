@@ -103,6 +103,7 @@ class FundingPlot(QWidget):
         self.y_offsets = {'price': 0.0}
         self.y_ranges = {'price': (0, 1)}
         self.view_end = None
+        self.resume_follow_at = None
         self._drag = None
         self.setMinimumHeight(180)
         self.setMouseTracking(True)
@@ -136,6 +137,7 @@ class FundingPlot(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._drag is not None:
             self._drag = None
+            self.resume_follow_at = self.view_end if self.view_end is not None and self.view_end > self.now else None
             self.unsetCursor()
             event.accept()
         else:
@@ -144,11 +146,20 @@ class FundingPlot(QWidget):
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.view_end = None
+            self.resume_follow_at = None
             self.y_offsets = {'price': 0.0}
             self.update()
             event.accept()
         else:
             super().mouseDoubleClickEvent(event)
+
+    def resume_follow_if_ready(self):
+        # Preserve history browsing and active drags. Only a future-space pan
+        # resumes following when incoming prices have filled that space.
+        if (self._drag is None and self.resume_follow_at is not None
+                and self.price_points and self.price_points[-1].timestamp >= self.resume_follow_at):
+            self.view_end = None
+            self.resume_follow_at = None
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -377,6 +388,7 @@ class FundingChart(QFrame):
 
     def advance_time(self):
         self.plot.now = int(time.time() * 1000)
+        self.plot.resume_follow_if_ready()
         expired_prices = bisect_left(self.plot.price_points, self.plot.now - RETENTION_MS,
                                      key=lambda point: point.timestamp)
         if expired_prices:
