@@ -63,7 +63,7 @@ class OrderBookPlot(QWidget):
         font = self.font()
         font.setPointSizeF(max(8, font.pointSizeF() - 1))
         painter.setFont(font)
-        rect = QRectF(62, 22, max(1, self.width() - 80), max(1, self.height() - 65))
+        rect = QRectF(62, 32, max(1, self.width() - 80), max(1, self.height() - 75))
         self.plot_rect = rect
         center, span = self.view()
         left, right = center - span / 2, center + span / 2
