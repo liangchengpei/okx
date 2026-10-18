@@ -230,7 +230,7 @@ class FundingPlot(QWidget):
             painter.setPen(QColor(RATIO_COLOR))
             ratio_value = ratio_low + i * (ratio_high - ratio_low) / 4
             painter.drawText(QRectF(0, y - 9, 62, 18), Qt.AlignRight | Qt.AlignVCenter,
-                             f'{ratio_value:.3f}' if ratios else '--')
+                             f'{ratio_value:.8g}' if ratios else '--')
             painter.setPen(QColor(PRICE_COLOR))
             price_value = price_low + i * (price_high - price_low) / 4
             label = axis_price_label(price_value, (price_high - price_low) / 4) if prices else '--'
@@ -349,7 +349,7 @@ class FundingPlot(QWidget):
                 point = min(nearby, key=lambda p: abs(p.timestamp - timestamp), default=None)
                 if point is not None and abs(point.timestamp - timestamp) <= 300000:
                     date = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
-                    text = f'多头账户 / 空头账户：{point.ratio} · {date}'
+                    text = f'多头账户 / 空头账户：{point.ratio:.8g} · {date}'
                     self.setToolTip((self.toolTip() + '\n' if self.toolTip() else '') + text)
 
         else:
@@ -420,7 +420,7 @@ class FundingChart(QFrame):
         elif self.plot.ratio_points:
             point = self.plot.ratio_points[-1]
             timestamp = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
-            self.ratio_status.setText(f'多 / 空：{point.ratio} · {timestamp} · 5分钟更新')
+            self.ratio_status.setText(f'多 / 空：{point.ratio:.8g} · {timestamp} · 5分钟更新')
         else:
             self.ratio_status.setText('多空账户比：暂无数据（5分钟更新）')
 
