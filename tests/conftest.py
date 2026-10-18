@@ -12,6 +12,7 @@ import pytest
 def isolated_application_data(monkeypatch, tmp_path):
     """GUI tests must never read or overwrite the user's persistent history."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
 
 @pytest.fixture(autouse=True)

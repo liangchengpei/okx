@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QPainter, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from okx_gui.funding_chart import FundingChart
 from okx_gui.trade_volume_chart import TradeVolumeChart
 from okx_gui.order_book_chart import OrderBookChart
+from okx_gui.preferences import chart_view, restore_chart_view, load_preferences, save_preferences
 from okx_gui.market import MarketWorker
 from okx_gui.positions import PositionsWorker
 from okx_gui.position_widgets import PositionCard
@@ -196,6 +197,8 @@ class ContractRow(QFrame):
 
 
 class MainWindow(QMainWindow):
+    CONTRACT_COLUMNS = 6
+
     def __init__(self, worker_factory=MarketWorker, speech_factory=SpeechService, *, auto_start=True,
                  positions_worker_factory=PositionsWorker, auto_start_positions=True,
                  orders_worker_factory=OrdersWorker, auto_start_orders=True):
@@ -208,6 +211,13 @@ class MainWindow(QMainWindow):
         self.orders_worker = None
         self._orders_updated_at = None
         self._positions_updated_at = None
+        self._manual_monitor_height = False
+        self._pending_layout = None
+        self._restoring_config = True
+        self._preferences_timer = QTimer(self)
+        self._preferences_timer.setSingleShot(True)
+        self._preferences_timer.setInterval(400)
+        self._preferences_timer.timeout.connect(self.save_configuration)
         self.rows = {}
         self._monitor_resize_pending = False
         self.speech = speech_factory(self)
@@ -274,15 +284,13 @@ class MainWindow(QMainWindow):
         self.row_layout = QGridLayout(content)
         self.row_layout.setContentsMargins(0, 0, 0, 0)
         self.row_layout.setSpacing(14)
-        self.row_layout.setColumnStretch(0, 1)
-        self.row_layout.setColumnStretch(1, 1)
         self.scroll.setWidget(content)
         table_layout.addWidget(self.scroll)
         monitor_layout.addWidget(table, 1)
         self.empty_label = QLabel("暂无合约，请在上方添加")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setObjectName("muted")
-        self.row_layout.addWidget(self.empty_label, 0, 0, 1, 2)
+        self.row_layout.addWidget(self.empty_label, 0, 0, 1, self.CONTRACT_COLUMNS)
         controls = QHBoxLayout()
         self.status_label = QLabel("行情监控未启动")
         self.status_label.setObjectName("muted")
@@ -346,14 +354,126 @@ class MainWindow(QMainWindow):
         self.setup_positions_panel()
         self.setup_orders_panel()
         self.setup_order_entry()
-        for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP"):
-            self.add_contract(inst)
+        self.main_splitter.splitterMoved.connect(self.monitor_splitter_moved)
+        self.trading_splitter.splitterMoved.connect(self.schedule_configuration_save)
+        self.restore_configuration()
+        self._restoring_config = False
         if auto_start:
             self.toggle_market()
         if auto_start_positions:
             self.refresh_positions()
         if auto_start_orders:
             self.start_orders()
+
+    @staticmethod
+    def configuration_combos(row):
+        return {
+            "trade_interval": row.chart_area.interval,
+            "price_interval": row.funding_area.interval,
+            "book_aggregation": row.order_book_area.aggregation,
+        }
+
+    def schedule_configuration_save(self, *_):
+        if not self._restoring_config:
+            self._preferences_timer.start()
+
+    def save_configuration(self):
+        self._preferences_timer.stop()
+        contracts = []
+        for inst, row in self.rows.items():
+            item = {
+                "view": chart_view(row),
+                "instrument": inst,
+                "low": row.low_input.text(),
+                "high": row.high_input.text(),
+                "step": row.step_input.text(),
+                "inside": row.inside_checkbox.isChecked(),
+                "emergency_low": row.emergency_buttons["low"].isChecked(),
+                "emergency_high": row.emergency_buttons["high"].isChecked(),
+            }
+            item.update({key: str(combo.currentData())
+                         for key, combo in self.configuration_combos(row).items()})
+            contracts.append(item)
+        try:
+            save_preferences({"version": 1, "contracts": contracts,
+                              "volume": self.volume_slider.value(),
+                              "layout": {
+                                  "geometry": bytes(self.saveGeometry()).hex(),
+                                  "main": bytes(self.main_splitter.saveState()).hex(),
+                                  "trading": bytes(self.trading_splitter.saveState()).hex(),
+                                  "manual_height": self._manual_monitor_height,
+                              }})
+        except OSError as exc:
+            self.show_error(f"界面配置保存失败：{exc}")
+
+    def restore_configuration(self):
+        data, error = load_preferences()
+        contracts = data.get("contracts")
+        if not isinstance(contracts, list):
+            contracts = [{"instrument": inst} for inst in ("BTC-USDT-SWAP", "SPCX-USDT-SWAP")]
+        for item in contracts:
+            if not isinstance(item, dict) or not isinstance(item.get("instrument"), str):
+                continue
+            if not self.add_contract(item["instrument"]):
+                continue
+            row = self.rows[item["instrument"].strip().upper()]
+            for key, field in (("low", row.low_input), ("high", row.high_input), ("step", row.step_input)):
+                if isinstance(item.get(key), str):
+                    field.setText(item[key])
+            for key, button in (("inside", row.inside_checkbox),
+                                ("emergency_low", row.emergency_buttons["low"]),
+                                ("emergency_high", row.emergency_buttons["high"])):
+                if isinstance(item.get(key), bool):
+                    button.setChecked(item[key])
+            for key, combo in self.configuration_combos(row).items():
+                for index in range(combo.count()):
+                    if str(combo.itemData(index)) == item.get(key):
+                        combo.setCurrentIndex(index)
+                        break
+            restore_chart_view(row, item.get("view"))
+        self._pending_layout = data.get("layout")
+        if isinstance(self._pending_layout, dict):
+            self.restore_layout_value(self, "restoreGeometry", self._pending_layout.get("geometry"))
+        volume = data.get("volume")
+        if type(volume) is int and 0 <= volume <= 100:
+            self.volume_slider.setValue(volume)
+        if error:
+            self.show_error(error)
+
+    @staticmethod
+    def restore_layout_value(widget, method, value):
+        if isinstance(value, str):
+            try:
+                getattr(widget, method)(QByteArray(bytes.fromhex(value)))
+            except (ValueError, TypeError):
+                pass
+
+    def restore_layout(self):
+        data, self._pending_layout = self._pending_layout, None
+        if not isinstance(data, dict):
+            return
+        self._manual_monitor_height = data.get("manual_height") is True
+        self.restore_layout_value(self.main_splitter, "restoreState", data.get("main"))
+        self.restore_layout_value(self.trading_splitter, "restoreState", data.get("trading"))
+
+    def monitor_splitter_moved(self, *_):
+        self._manual_monitor_height = True
+        self.schedule_configuration_save()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_preferences_timer"):
+            self.schedule_configuration_save()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, "_preferences_timer"):
+            self.schedule_configuration_save()
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Wheel, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            self.schedule_configuration_save()
+        return super().eventFilter(watched, event)
 
     def setup_order_entry(self):
         layout = self.order_panel.layout()
@@ -721,6 +841,16 @@ class MainWindow(QMainWindow):
         self.sync_subscriptions()
         self.start_button.setEnabled(True)
         self.schedule_monitor_resize()
+        for field in (row.low_input, row.high_input, row.step_input):
+            field.textChanged.connect(self.schedule_configuration_save)
+        row.inside_checkbox.toggled.connect(self.schedule_configuration_save)
+        for button in row.emergency_buttons.values():
+            button.toggled.connect(self.schedule_configuration_save)
+        for combo in self.configuration_combos(row).values():
+            combo.currentIndexChanged.connect(self.schedule_configuration_save)
+        for area in (row.chart_area, row.funding_area, row.order_book_area):
+            area.plot.installEventFilter(self)
+        self.schedule_configuration_save()
         return True
 
     def remove_contract(self, inst):
@@ -743,14 +873,20 @@ class MainWindow(QMainWindow):
         self.schedule_monitor_resize()
 
     def relayout_contracts(self):
+        self.schedule_configuration_save()
         for row in self.rows.values():
             self.row_layout.removeWidget(row)
+        columns = min(len(self.rows), self.CONTRACT_COLUMNS)
+        for column in range(self.CONTRACT_COLUMNS):
+            self.row_layout.setColumnStretch(column, int(column < columns))
         for index, row in enumerate(self.rows.values()):
-            self.row_layout.addWidget(row, index // 2, index % 2)
+            self.row_layout.addWidget(row, index // self.CONTRACT_COLUMNS, index % self.CONTRACT_COLUMNS)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.schedule_monitor_resize()
+        if self._pending_layout is not None:
+            QTimer.singleShot(0, self.restore_layout)
 
     def schedule_monitor_resize(self):
         if not self._monitor_resize_pending:
@@ -759,21 +895,22 @@ class MainWindow(QMainWindow):
 
     def fit_monitor_height(self):
         self._monitor_resize_pending = False
-        if not self.isVisible():
+        if not self.isVisible() or self._manual_monitor_height:
             return
         self.monitor_panel.layout().activate()
         self.monitor_table.layout().activate()
         self.row_layout.activate()
         heights = [max(row.minimumHeight(), row.sizeHint().height()) for row in self.rows.values()]
-        rows_height = sum(max(heights[index:index + 2]) for index in range(0, len(heights), 2))
-        rows_height += max(0, (len(heights) + 1) // 2 - 1) * self.row_layout.verticalSpacing()
+        columns = self.CONTRACT_COLUMNS
+        rows_height = sum(max(heights[index:index + columns]) for index in range(0, len(heights), columns))
+        rows_height += max(0, (len(heights) + columns - 1) // columns - 1) * self.row_layout.verticalSpacing()
         if not self.rows:
             rows_height = self.empty_label.sizeHint().height()
         overhead = self.monitor_panel.height() - self.scroll.viewport().height()
         total = sum(self.main_splitter.sizes())
         bottom_minimum = max(self.trading_panel.minimumHeight(), self.trading_panel.minimumSizeHint().height())
         desired = max(self.monitor_panel.minimumHeight(), rows_height + overhead)
-        if 0 < len(self.rows) <= 2:
+        if 0 < len(self.rows) <= self.CONTRACT_COLUMNS:
             desired = total - max(500, bottom_minimum)
         elif self.rows:
             desired = max(desired, total - max(500, bottom_minimum))
@@ -792,6 +929,7 @@ class MainWindow(QMainWindow):
     def change_volume(self, value):
         self.volume_label.setText(f"音量 {value}%" if value else "音量 0%（静音）")
         self.speech.set_volume(value)
+        self.schedule_configuration_save()
 
     def test_voice(self):
         error = self.speech.availability_error()
@@ -966,6 +1104,7 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        self.save_configuration()
         if not self.relay_controller.shutdown():
             self.order_entry.note.setText('接力请求处理中，请等待后关闭窗口')
             event.ignore()
@@ -997,9 +1136,6 @@ class MainWindow(QMainWindow):
                 self.positions_panel.setToolTip("正在关闭持仓连接，请稍后关闭窗口")
                 event.ignore()
                 return
-        for row in self.rows.values():
-            for button in row.emergency_buttons.values():
-                button.setChecked(False)
         self.speech.shutdown()
         if self.worker and self.worker.isRunning():
             worker = self.worker

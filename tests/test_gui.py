@@ -593,12 +593,14 @@ def test_monitor_height_follows_contract_count(qtbot):
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     assert abs(window.main_splitter.sizes()[1] - 500) <= 2
     initial = window.main_splitter.sizes()[0]
-    assert window.add_contract('ETH-USDT-SWAP')
+    for index in range(5):
+        assert window.add_contract(f'EXTRA{index}-USDT-SWAP')
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     assert window.main_splitter.sizes()[0] >= initial
-    assert window.scroll.verticalScrollBar().maximum() > 0
+    qtbot.waitUntil(lambda: window.scroll.verticalScrollBar().maximum() > 0)
     grown = window.main_splitter.sizes()[0]
-    window.remove_contract('ETH-USDT-SWAP')
+    for index in range(5):
+        window.remove_contract(f'EXTRA{index}-USDT-SWAP')
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     assert window.main_splitter.sizes()[0] <= grown
     assert abs(window.main_splitter.sizes()[0] - initial) <= 2
@@ -606,7 +608,7 @@ def test_monitor_height_follows_contract_count(qtbot):
         window.add_contract(f'TEST{index}-USDT-SWAP')
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
     assert window.main_splitter.sizes()[1] >= window.trading_panel.minimumSizeHint().height()
-    assert window.scroll.verticalScrollBar().maximum() > 0
+    qtbot.waitUntil(lambda: window.scroll.verticalScrollBar().maximum() > 0)
     for instrument in list(window.rows):
         window.remove_contract(instrument)
     qtbot.waitUntil(lambda: not window._monitor_resize_pending)
@@ -693,7 +695,7 @@ def test_contract_panels_have_chart_space_and_reflow_after_removal(qtbot):
     assert btc.change.text() == '+0.24%'
     assert window.add_contract('ETH-USDT-SWAP')
     eth = window.rows['ETH-USDT-SWAP']
-    assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (1, 0)
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (0, 2)
     window.remove_contract(btc.instrument)
     assert window.row_layout.getItemPosition(window.row_layout.indexOf(spcx))[:2] == (0, 0)
     assert window.row_layout.getItemPosition(window.row_layout.indexOf(eth))[:2] == (0, 1)
@@ -935,3 +937,128 @@ def test_order_book_is_below_price_chart_and_stops_on_removal(qtbot):
     assert row.instrument not in window.rows
     assert not area.timer.isActive()
     window.close()
+
+
+def test_contract_panels_wrap_at_six_and_reflow(qtbot):
+    window = make_window(qtbot)
+    for index in range(5):
+        assert window.add_contract(f'EXTRA{index}-USDT-SWAP')
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    panels = list(window.rows.values())
+    for index, panel in enumerate(panels):
+        assert window.row_layout.getItemPosition(window.row_layout.indexOf(panel))[:2] == divmod(index, 6)
+    qtbot.waitUntil(lambda: window.scroll.horizontalScrollBar().maximum() > 0)
+    assert all(panel.width() >= 550 for panel in panels)
+    window.remove_contract(panels[0].instrument)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(panels[-1]))[:2] == (0, 5)
+    for panel in panels[3:]:
+        window.remove_contract(panel.instrument)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    assert [window.row_layout.columnStretch(i) for i in range(6)] == [1, 1, 0, 0, 0, 0]
+
+
+def test_preferences_restore_contracts_and_controls(qtbot):
+    from okx_gui.preferences import load_preferences
+    window = make_window(qtbot)
+    window.remove_contract('SPCX-USDT-SWAP')
+    window.add_contract('ETH-USDT-SWAP')
+    row = window.rows['BTC-USDT-SWAP']
+    row.low_input.setText('82000.05')
+    row.high_input.setText('83000')
+    row.step_input.setText('100.5')
+    row.inside_checkbox.setChecked(False)
+    row.emergency_buttons['low'].setChecked(False)
+    row.chart_area.interval.setCurrentIndex(2)
+    row.funding_area.interval.setCurrentIndex(1)
+    row.order_book_area.aggregation.setCurrentIndex(3)
+    window.volume_slider.setValue(73)
+    qtbot.waitUntil(lambda: not window._preferences_timer.isActive())
+    assert load_preferences()[0]['volume'] == 73
+    window.close()
+    restored = make_window(qtbot)
+    assert list(restored.rows) == ['BTC-USDT-SWAP', 'ETH-USDT-SWAP']
+    row = restored.rows['BTC-USDT-SWAP']
+    assert (row.low_input.text(), row.high_input.text(), row.step_input.text()) == ('82000.05', '83000', '100.5')
+    assert not row.inside_checkbox.isChecked()
+    assert not row.emergency_buttons['low'].isChecked()
+    assert row.emergency_buttons['high'].isChecked()
+    assert row.chart_area.interval.currentIndex() == 2
+    assert row.funding_area.interval.currentIndex() == 1
+    assert row.order_book_area.aggregation.currentIndex() == 3
+    assert restored.volume_slider.value() == 73
+    assert row.ladder is None
+    assert not row.voice_button.running
+    assert restored.rows['ETH-USDT-SWAP'].high_input.text() == ''
+
+
+def test_preferences_save_empty_contract_list_on_close(qtbot):
+    window = make_window(qtbot)
+    for inst in list(window.rows):
+        window.remove_contract(inst)
+    window.close()
+    restored = make_window(qtbot)
+    assert not restored.rows
+
+
+def test_preferences_corrupt_file_uses_defaults(qtbot):
+    from okx_gui.preferences import preferences_path
+    path = preferences_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{broken', encoding='utf-8')
+    window = make_window(qtbot)
+    assert list(window.rows) == ['BTC-USDT-SWAP', 'SPCX-USDT-SWAP']
+    assert '配置读取失败' in window.error_label.text()
+
+
+def test_preferences_restore_layout_and_chart_views(qtbot):
+    window = make_window(qtbot)
+    qtbot.waitUntil(lambda: not window._monitor_resize_pending)
+    window.resize(1400, 750)
+    window.main_splitter.setSizes([250, 400])
+    window.monitor_splitter_moved()
+    window.trading_splitter.setSizes([500, 350, 400])
+    row = window.rows['BTC-USDT-SWAP']
+    row.chart_area.plot.visible_count = 80
+    row.funding_area.plot.manual_span = 7200000
+    row.funding_area.plot.y_scales = {'price': 2.0, 'ratio': .5}
+    row.funding_area.plot.y_offsets = {'price': 50.0, 'ratio': .2}
+    row.funding_area.plot.view_end = 1700000000000
+    row.order_book_area.plot.manual_span = 2000.0
+    row.order_book_area.plot.manual_center = 82000.0
+    row.order_book_area.plot.y_scale = 2.0
+    row.order_book_area.plot.pan_y = 15.0
+    window.close()
+    restored = make_window(qtbot)
+    qtbot.waitUntil(lambda: restored._pending_layout is None)
+    assert restored._manual_monitor_height
+    before = restored.main_splitter.sizes()
+    restored.fit_monitor_height()
+    assert restored.main_splitter.sizes() == before
+    widths = restored.trading_splitter.sizes()
+    assert widths[0] > widths[2] > widths[1]
+    row = restored.rows['BTC-USDT-SWAP']
+    assert row.chart_area.plot.visible_count == 80
+    assert row.funding_area.plot.manual_span == 7200000
+    assert row.funding_area.plot.y_scales == {'price': 2.0, 'ratio': .5}
+    assert row.funding_area.plot.y_offsets == {'price': 50.0, 'ratio': .2}
+    assert row.funding_area.plot.view_end == 1700000000000
+    assert row.order_book_area.plot.manual_span == 2000.0
+    assert row.order_book_area.plot.manual_center == 82000.0
+    assert row.order_book_area.plot.pan_y == 15.0
+    assert row.order_book_area.plot.y_scale == 2.0
+
+
+def test_invalid_view_preferences_keep_defaults(qtbot):
+    from okx_gui.preferences import restore_chart_view
+    window = make_window(qtbot)
+    row = window.rows['BTC-USDT-SWAP']
+    restore_chart_view(row, {
+        'volume_count': -5, 'price_span': 0, 'book_scale': float('nan'),
+        'price_scales': {'price': -1}, 'book_center': 'bad',
+    })
+    assert row.chart_area.plot.visible_count == 44
+    assert row.funding_area.plot.manual_span is None
+    assert row.funding_area.plot.y_scales['price'] == 1
+    assert row.order_book_area.plot.y_scale == 1
+    assert row.order_book_area.plot.manual_center is None
