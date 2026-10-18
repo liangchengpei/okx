@@ -385,7 +385,7 @@ class FundingChart(QFrame):
             self.interval.addItem(f'{minutes} 分钟', minutes)
         heading.addWidget(self.interval)
         layout.addLayout(heading)
-        self.ratio_status = QLabel('多空账户比：等待数据（5分钟更新）')
+        self.ratio_status = QLabel('多空账户比：等待数据')
         self.ratio_status.setObjectName('muted')
         self.ratio_status.setTextFormat(Qt.PlainText)
         self.ratio_status.setFixedHeight(self.ratio_status.fontMetrics().lineSpacing() + 4)
@@ -419,10 +419,9 @@ class FundingChart(QFrame):
             self.ratio_status.setText(error)
         elif self.plot.ratio_points:
             point = self.plot.ratio_points[-1]
-            timestamp = datetime.fromtimestamp(point.timestamp / 1000, ZONE).strftime('%m-%d %H:%M')
-            self.ratio_status.setText(f'多 / 空：{point.ratio:.8g} · {timestamp} · 5分钟更新')
+            self.ratio_status.setText(f'多 / 空：{point.ratio:.8g}')
         else:
-            self.ratio_status.setText('多空账户比：暂无数据（5分钟更新）')
+            self.ratio_status.setText('多空账户比：暂无数据')
 
     def set_price(self, value):
         self.worker.set_price(value)
