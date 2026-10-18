@@ -6,8 +6,8 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QByteArray, QEvent, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QPainter, QPolygonF
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import QCursor, QDrag, QPainter, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSplitter, QVBoxLayout, QWidget,
@@ -90,6 +90,67 @@ class SpeechButton(QPushButton):
             ]))
 
 
+CONTRACT_MIME = "application/x-okx-contract-panel"
+
+
+class ContractTitle(QLabel):
+    """Only the title starts a drag; chart gestures keep their existing meaning."""
+
+    def __init__(self, instrument, parent):
+        super().__init__(instrument, parent)
+        self.instrument = instrument
+        self.press_position = None
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("按住拖动，调整合约排列顺序")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.press_position = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.press_position = None
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self.press_position is not None and event.buttons() & Qt.LeftButton
+                and (event.position().toPoint() - self.press_position).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self.press_position = None
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(CONTRACT_MIME, self.instrument.encode("utf-8"))
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(self.rect().center())
+            timer = QTimer(self)
+            timer.timeout.connect(self.scroll_during_drag)
+            timer.start(50)
+            self.setCursor(Qt.ClosedHandCursor)
+            try:
+                drag.exec(Qt.MoveAction)
+            finally:
+                timer.stop()
+                timer.deleteLater()
+                drag.deleteLater()
+                self.setCursor(Qt.OpenHandCursor)
+        super().mouseMoveEvent(event)
+
+    def scroll_during_drag(self):
+        scroll = self.window().scroll
+        point = scroll.viewport().mapFromGlobal(QCursor.pos())
+        rect = scroll.viewport().rect()
+        if not rect.adjusted(-30, -30, 30, 30).contains(point):
+            return
+        for value, extent, bar in (
+            (point.x(), rect.width(), scroll.horizontalScrollBar()),
+            (point.y(), rect.height(), scroll.verticalScrollBar()),
+        ):
+            delta = -25 if value < 35 else 25 if value > extent - 35 else 0
+            if delta:
+                bar.setValue(bar.value() + delta)
+
+
 class ContractRow(QFrame):
     def __init__(self, instrument, remove, toggle_voice, toggle_emergency):
         super().__init__()
@@ -101,7 +162,8 @@ class ContractRow(QFrame):
         layout.setSpacing(10)
         header = QHBoxLayout()
         header.setContentsMargins(8, 0, 4, 0)
-        self.name = QLabel(instrument)
+        self.setAcceptDrops(True)
+        self.name = ContractTitle(instrument, self)
         self.name.setStyleSheet("font-weight: 600;")
         self.ladder = None
         self.emergency_triggered = False
@@ -186,6 +248,40 @@ class ContractRow(QFrame):
         layout.addLayout(voice)
         self.setToolTip("未启动监控")
 
+    def valid_contract_drag(self, event):
+        source = event.source()
+        return (isinstance(source, ContractTitle) and source.window() is self.window()
+                and event.mimeData().hasFormat(CONTRACT_MIME)
+                and source.instrument != self.instrument)
+
+    def dragEnterEvent(self, event):
+        if self.valid_contract_drag(event):
+            self.name.setStyleSheet("font-weight: 600; border-bottom: 2px solid #747b85;")
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self.valid_contract_drag(event):
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.name.setStyleSheet("font-weight: 600;")
+        event.accept()
+
+    def dropEvent(self, event):
+        self.name.setStyleSheet("font-weight: 600;")
+        if self.valid_contract_drag(event):
+            self.window().move_contract(event.source().instrument, self.instrument)
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
     def update_quote(self, price, change):
         self.funding_area.set_price(price)
         self.price.setText(price)
@@ -211,6 +307,7 @@ class MainWindow(QMainWindow):
         self.orders_worker = None
         self._orders_updated_at = None
         self._positions_updated_at = None
+        self._configuration_closed = False
         self._manual_monitor_height = False
         self._pending_layout = None
         self._restoring_config = True
@@ -374,7 +471,7 @@ class MainWindow(QMainWindow):
         }
 
     def schedule_configuration_save(self, *_):
-        if not self._restoring_config:
+        if not self._restoring_config and not self._configuration_closed:
             self._preferences_timer.start()
 
     def save_configuration(self):
@@ -872,6 +969,17 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(bool(self.rows) and (self.worker is None or not self.worker.isInterruptionRequested()))
         self.schedule_monitor_resize()
 
+    def move_contract(self, source, target):
+        if source == target or source not in self.rows or target not in self.rows:
+            return
+        instruments = list(self.rows)
+        destination = instruments.index(target)
+        instruments.remove(source)
+        instruments.insert(destination, source)
+        self.rows = {inst: self.rows[inst] for inst in instruments}
+        self.relayout_contracts()
+        self.schedule_monitor_resize()
+
     def relayout_contracts(self):
         self.schedule_configuration_save()
         for row in self.rows.values():
@@ -1104,6 +1212,9 @@ class MainWindow(QMainWindow):
             row.state.setText("未启动监控")
 
     def closeEvent(self, event):
+        if self._configuration_closed:
+            event.accept()
+            return
         self.save_configuration()
         if not self.relay_controller.shutdown():
             self.order_entry.note.setText('接力请求处理中，请等待后关闭窗口')
@@ -1144,6 +1255,8 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("正在关闭行情连接，请稍后关闭窗口")
                 event.ignore()
                 return
+        self._configuration_closed = True
+        self._preferences_timer.stop()
         event.accept()
 
 

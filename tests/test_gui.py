@@ -1062,3 +1062,69 @@ def test_invalid_view_preferences_keep_defaults(qtbot):
     assert row.funding_area.plot.y_scales['price'] == 1
     assert row.order_book_area.plot.y_scale == 1
     assert row.order_book_area.plot.manual_center is None
+
+
+def test_reorder_contracts_preserves_panels_and_saves_order(qtbot):
+    window = make_window(qtbot)
+    for index in range(5):
+        window.add_contract(f'EXTRA{index}-USDT-SWAP')
+    original = dict(window.rows)
+    btc = original['BTC-USDT-SWAP']
+    btc.low_input.setText('82000')
+    window.move_contract('BTC-USDT-SWAP', 'EXTRA4-USDT-SWAP')
+    assert list(window.rows)[-1] == 'BTC-USDT-SWAP'
+    assert window.row_layout.getItemPosition(window.row_layout.indexOf(btc))[:2] == (1, 0)
+    assert all(window.rows[inst] is row for inst, row in original.items())
+    window.move_contract('BTC-USDT-SWAP', 'SPCX-USDT-SWAP')
+    assert list(window.rows)[0] == 'BTC-USDT-SWAP'
+    window.move_contract('EXTRA4-USDT-SWAP', 'BTC-USDT-SWAP')
+    expected = list(window.rows)
+    window.move_contract('missing', 'BTC-USDT-SWAP')
+    window.move_contract('BTC-USDT-SWAP', 'BTC-USDT-SWAP')
+    assert list(window.rows) == expected
+    window.close()
+    restored = make_window(qtbot)
+    assert list(restored.rows) == expected
+    assert restored.rows['BTC-USDT-SWAP'].low_input.text() == '82000'
+
+
+def test_contract_drop_uses_title_and_ignores_external_source(qtbot):
+    from PySide6.QtCore import QMimeData, Qt
+    from okx_gui.app import CONTRACT_MIME
+    window = make_window(qtbot)
+    btc, spcx = window.rows.values()
+
+    class Drop:
+        accepted = False
+        action = None
+
+        def __init__(self, source):
+            self.origin = source
+            self.mime = QMimeData()
+            self.mime.setData(CONTRACT_MIME, b'BTC-USDT-SWAP')
+
+        def source(self):
+            return self.origin
+
+        def mimeData(self):
+            return self.mime
+
+        def setDropAction(self, action):
+            self.action = action
+
+        def accept(self):
+            self.accepted = True
+
+        def ignore(self):
+            self.accepted = False
+
+    external = Drop(None)
+    spcx.dropEvent(external)
+    assert not external.accepted
+    event = Drop(btc.name)
+    spcx.dragEnterEvent(event)
+    assert event.accepted
+    spcx.dropEvent(event)
+    assert event.action == Qt.MoveAction
+    assert list(window.rows) == [spcx.instrument, btc.instrument]
+    assert 'border-bottom' not in spcx.name.styleSheet()
