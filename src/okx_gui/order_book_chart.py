@@ -1,7 +1,5 @@
 """Two-sided depth histogram: asks above zero, bids below zero."""
 from decimal import Decimal
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -199,17 +197,14 @@ class OrderBookChart(QFrame):
         self.aggregation.setToolTip('按价格聚合：买盘向下取整，卖盘向上取整。每档累加当前挂单量，不累计成交量。')
         heading.addWidget(self.aggregation)
         layout.addLayout(heading)
-        self.details = QLabel('买一 --　卖一 --')
-        self.details.setObjectName('muted')
-        layout.addWidget(self.details)
-        self.details.setToolTip('OKX：连接中')
+        self.setToolTip('OKX：连接中')
         self.plot = OrderBookPlot()
         self.plot.unit = instrument.split("-")[0]
         self.plot.setToolTip('左键拖动，滚轮缩放价格轴，Ctrl+滚轮缩放挂单量轴；双击恢复自动视图')
         layout.addWidget(self.plot, 1)
         self.aggregation.currentIndexChanged.connect(self.change_aggregation)
         self.worker = OrderBookWorker(instrument, self)
-        self.worker.status.connect(self.details.setToolTip)
+        self.worker.status.connect(self.setToolTip)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.refresh)
@@ -224,10 +219,6 @@ class OrderBookChart(QFrame):
         snapshot = self.worker.take_snapshot()
         if snapshot is not None:
             self.plot.set_snapshot(snapshot)
-            bid = number(snapshot.bids[0][0]) if snapshot.bids else '--'
-            ask = number(snapshot.asks[0][0]) if snapshot.asks else '--'
-            timestamp = datetime.fromtimestamp(snapshot.timestamp / 1000, ZoneInfo('Asia/Shanghai')).strftime('%H:%M:%S')
-            self.details.setText(f'买一 {bid}　卖一 {ask}　更新 {timestamp}')
 
     def shutdown(self):
         self.timer.stop()

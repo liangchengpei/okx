@@ -83,7 +83,7 @@ def test_chart_aggregation_pan_zoom_and_live_refresh(qtbot):
     plot = chart.plot
     plot.grab()
     assert chart.aggregation.count() == 4 and plot.snapshot == snapshot
-    assert '买一 100' in chart.details.text()
+    assert not hasattr(chart, 'details')
     for i, step in enumerate(('0.1', '1', '10', '50')):
         chart.aggregation.setCurrentIndex(i)
         assert plot.step == D(step)
